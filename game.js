@@ -5,7 +5,8 @@
 // is purely cosmetic), the Permission Gate (a portcullis with a red rune lock) appears when a
 // session waits for approval, the hero waits for orders when sessions wait for you and rests at the
 // campfire when nothing is open. Click it for the character sheet.
-// Inline SVG + SMIL duels; sounds are synthesized with WebAudio.
+// Inline SVG + SMIL duels; sounds are synthesized with WebAudio. The arena/sheet CSS below is shared
+// with the Pokémon theme (poke.js); the rest only runs when the D&D theme is selected.
 (() => {
   const NS = 'http://www.w3.org/2000/svg';
   const reduce = matchMedia('(prefers-reduced-motion: reduce)');
@@ -23,7 +24,7 @@
   box-shadow: 0 0 24px #ffd10022; overflow: hidden; cursor: pointer; position: relative; }
 .arena:hover, .arena:focus-visible { border-color: var(--yellow); outline: none; }
 .arena .hud { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px 0; font: 11px var(--mono); color: var(--muted); }
-.arena .hud b { font: 800 13px var(--mono); color: var(--yellow); }
+.arena .hud b { font: 800 13px var(--mono); color: var(--yellow); white-space: nowrap; }
 .arena .hud .tt { color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .arena .hud .xpn { margin-left: auto; white-space: nowrap; }
 .xpbar { height: 4px; margin: 5px 10px 0; background: var(--line); border-radius: 2px; overflow: hidden; }
@@ -126,7 +127,10 @@
 .sheet .log b { color: var(--yellow); }
 .sheet .snd { margin-top: 12px; }
 .sheet .wide2 { grid-column: span 2; } @media (max-width: 820px) { .sheet .wide2 { grid-column: auto; } }
+.sheet .thm { margin-left: auto; display: inline-flex; } .sheet .thm + .x { margin-left: 0; }
+.sheet .thm select { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; font: 12px var(--mono); padding: 3px 6px; }
 </style>`);
+  if ((window.GAME_THEME || 'dnd') !== 'dnd') return;
 
   // ---------- Sound (WebAudio, synthesized) ----------
   let actx = null;
@@ -767,6 +771,7 @@
     document.querySelector('.sheet-bg')?.remove();
     document.body.insertAdjacentHTML('beforeend', `<div class="sheet-bg"><div class="sheet" role="dialog" aria-modal="true" aria-label="Character sheet">
       <header><h3>Game of <span>Claude</span></h3><span style="font:12px var(--mono);color:var(--muted)">${g.achievements.filter(a => a.on).length}/${g.achievements.length} achievements · 🔥 ${g.streak}-day streak · ⚔ ${all[0]}W / ${all[1]}L</span>
+        <label class="thm"><select id="gTheme" aria-label="Theme"><option value="dnd" selected>Dungeons &amp; Dragons</option><option value="pokemon">Pokémon</option></select></label>
         <button class="x" type="button" aria-label="Close">✕</button></header>
       <div class="grid">
         <section>
@@ -805,6 +810,7 @@
     bg.querySelectorAll('[data-since]').forEach(el => el.textContent = new Date(el.dataset.since).toLocaleTimeString());
     bg.onclick = e => { if (e.target === bg) closeSheet(); };
     bg.querySelector('.x').onclick = closeSheet;
+    bg.querySelector('#gTheme').onchange = e => window.setGameTheme?.(e.target.value);
     const snd = bg.querySelector('#gSnd');
     if (snd) snd.onclick = () => { store.set('gameSound', store.get('gameSound') === '1' ? '0' : '1'); SFX.level(); openSheet(); };
     if (!scroll) bg.querySelector('.x').focus();
