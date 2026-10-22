@@ -55,7 +55,25 @@
   const RARE = new Set([83, 106, 107, 108, 113, 115, 122, 123, 124, 125, 126, 127, 128, 131, 132, 137, 138, 140, 142, 143, 147]);
   const IDS = Array.from({ length: 150 }, (_, i) => i + 1);
   const power = id => id === 129 ? .5 : LEGEND.has(id) ? 1.35 : RARE.has(id) ? 1.05 : [.85, 1, 1.15][stage(id)];
-  const catchRate = id => LEGEND.has(id) ? .03 : RARE.has(id) ? .12 : [.35, .2, .1][stage(id)];
+  // encounter rarity per evolution family (by its first form); evolved forms are rarer still
+  const TIERS = [
+    { name: 'common', w: 1, c: .35 },
+    { name: 'uncommon', w: .3, c: .25, ids: [25, 35, 37, 58, 63, 77, 83, 95, 102, 104, 106, 107, 108, 111, 114, 115, 122, 123, 124, 125, 126, 127, 128] },
+    { name: 'rare', w: .06, c: .12, ids: [1, 4, 7, 113, 132, 133, 137, 138, 140, 147] },
+    { name: 'very rare', w: .012, c: .06, ids: [131, 142, 143] },
+    { name: 'legendary', w: .002, c: .05, ids: [144, 145, 146] },
+    { name: 'mythic', w: .001, c: .04, ids: [150] },
+  ];
+  const first = id => PRE[id] ? first(PRE[id]) : id;
+  const TIER_OF = {};
+  TIERS.forEach((t, i) => (t.ids || []).forEach(id => { TIER_OF[id] = i; }));
+  const tier = id => TIERS[TIER_OF[first(id)] || 0];
+  const rarity = id => tier(id).w * [1, .3, .08][stage(id)];
+  const rarityName = id => {
+    const t = tier(id).name, r = rarity(id);
+    return t === 'legendary' || t === 'mythic' ? t : r >= .3 ? 'common' : r >= .06 ? 'uncommon' : r >= .012 ? 'rare' : 'very rare';
+  };
+  const catchRate = id => tier(id).c * [1, .6, .35][stage(id)];
   const yieldExp = id => LEGEND.has(id) ? 270 : RARE.has(id) ? 160 : [64, 142, 220][stage(id)];
   // battles end every ~10 s while Claude works, so EXP is 1/25 of the games' formula: first evolution (Lv 16) after ~3 h of work
   const winExp = (id, L) => Math.max(1, Math.round(yieldExp(id) * L / 7 / 25));
@@ -366,9 +384,9 @@
     const L = lvOf(partner()), wl = Math.max(2, Math.min(100, L + rint(-3, 2) + (Math.random() < .08 ? 4 : 0)));
     const kind = KIND_TYPES[toolKind(S.scene?.target?.lastTool)] || '', rare = S.rare;
     const ok = id => id !== S.wild && (MIN[id] || 0) <= wl && (!LEGEND.has(id) || (trainerLv() >= 8 && wl >= (id === 150 ? 70 : 50)));
-    const pool = IDS.filter(id => ok(id) && (!rare || RARE.has(id) || LEGEND.has(id)));
-    const list = pool.length ? pool : IDS.filter(ok);
-    const wts = list.map(id => (LEGEND.has(id) ? (rare ? .5 : .03) : RARE.has(id) ? .25 : [1, .45, .2][stage(id)]) *
+    const list = IDS.filter(ok);
+    // a lure (level-up, big deed) makes everything but common ones 5× likelier, legendaries only 2×
+    const wts = list.map(id => rarity(id) * (rare ? (LEGEND.has(id) ? 2 : rarity(id) < .3 ? 5 : 1) : 1) *
       (kind.split(' ').includes(TYPE[id]) ? 3 : 1) * (caught(id) ? 1 : 1.5));
     let r = Math.random() * wts.reduce((a, b) => a + b, 0);
     S.rare = 0;
@@ -380,7 +398,8 @@
     S.foeAt = Date.now(); S.stay = 25000 + Math.random() * 20000; S.turn = 0; S.throws = 0; S.lastThrow = -9;
     P.seen[id] = 1; save();
     drawFoe(); drawTop(); setCap();
-    ribbon(`A WILD ${NAMES[id].toUpperCase()} APPEARED!`, `Lv ${wl} · ${TN[TYPE[id]].toUpperCase()}${fresh ? ' · NEW POKÉDEX ENTRY' : caught(id) ? ' · ✓ CAUGHT' : ''}`, TC[TYPE[id]]);
+    const rn = rarityName(id);
+    ribbon(`A WILD ${NAMES[id].toUpperCase()} APPEARED!`, `Lv ${wl} · ${TN[TYPE[id]].toUpperCase()}${rn === 'common' ? '' : ` · ${rn === 'uncommon' ? '' : '★ '}${rn.toUpperCase()}`}${fresh ? ' · NEW POKÉDEX ENTRY' : caught(id) ? ' · ✓ CAUGHT' : ''}`, TC[TYPE[id]]);
     SFX.spawn();
     const t = svg.querySelector('#gSay'); if (t) t.textContent = '';
     setTimeout(() => { if (S.wild === id && S.scene?.kind === 'battle') speak(`${NAMES[id]}!`, 'foe'); }, 2400);
@@ -621,7 +640,7 @@
         </section>
         <section style="grid-column:1/-1"><h4>Pokédex · ${owned.size} caught · ${seenN} seen · click a caught one to make it your partner</h4><div class="dex">${IDS.map(id => {
           const own = owned.has(id), seen = own || P.seen[id];
-          return `<button type="button" class="${own ? 'own' : seen ? 'seen' : ''}${m && m.id === id ? ' cur' : ''}"${own ? ` data-dex="${id}"` : ' disabled'} title="${seen ? esc(NAMES[id]) + ' · ' + TN[TYPE[id]] : 'not seen yet'}">` +
+          return `<button type="button" class="${own ? 'own' : seen ? 'seen' : ''}${m && m.id === id ? ' cur' : ''}"${own ? ` data-dex="${id}"` : ' disabled'} title="${seen ? `${esc(NAMES[id])} · ${TN[TYPE[id]]} · ${rarityName(id)}` : 'not seen yet'}">` +
             `${seen ? img(id) : '<span class="q unk">?</span>'}<span>${no(id)} ${seen ? esc(NAMES[id]) : ''}</span></button>`; }).join('')}</div></section>
         <section style="grid-column:1/-1"><h4>Badges</h4><div class="ach badges">${g.achievements.map(a =>
           `<div class="${a.on ? 'on' : ''}">${esc(a.name)}<small>${esc(a.desc)}</small></div>`).join('')}</div></section>
