@@ -25,6 +25,9 @@ refusals, failing hooks, `/mcp` reconnects, retries, missing tools, expired toke
 allow entries, `.claude` files that drifted in worktrees, piling worktrees, requests that recur across
 sessions (slash command / skill candidates), long and duplicated sessions. `--claude` adds written
 recommendations from `claude -p` (Sonnet, no tools, no MCP, no saved session, ~20 s).
+The **↻ Refresh** button in the card re-runs the analysis with the Claude review right away
+(`POST /api/insights/refresh`, one run at a time; it needs a custom header, so other web pages
+cannot trigger paid runs through the localhost server).
 
 ```bash
 python3 insights.py                     # rules only, saves the report and prints it

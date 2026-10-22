@@ -45,10 +45,39 @@ class Hub:
         self.lock = threading.Lock()
         self.cond = threading.Condition()
         self.version, self.data = 0, b"{}"
+        self.ins_run = {"running": False, "startedAt": None, "error": None}  # dashboard-triggered insights run
+
+    def refresh_insights(self, root: Path) -> bool:
+        """Re-runs insights.py with the Claude review in the background (one run at a time).
+        False if a run is already going."""
+        with self.cond:
+            if self.ins_run["running"]:
+                return False
+            self.ins_run = {"running": True, "startedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "error": None}
+
+        def work():
+            error = None
+            try:
+                report = insights.run(insights.DAYS, root, True, insights.CLAUDE_MODEL)
+                insights.save(report)
+                if not report["review"]["ok"]:
+                    error = report["review"]["error"]
+            except Exception as e:  # shown in the card, the server keeps running
+                error = repr(e)[:300]
+            with self.cond:
+                self.ins_run = {"running": False, "startedAt": None, "error": error}
+            with self.lock:
+                self.build()
+
+        threading.Thread(target=work, daemon=True).start()
+        with self.lock:
+            self.build()
+        return True
 
     def build(self):
         snap = self.collector.snapshot(self.days, refresh=False)
         snap["insights"] = insights.latest()  # newest insights.py report, picked up within STALE seconds
+        snap["insightsRun"] = self.ins_run
         data = json.dumps(snap, default=str).encode()
         with self.cond:
             self.version += 1
@@ -77,8 +106,16 @@ class Hub:
             return self.version, self.data
 
 
-def handler(hub: Hub):
+def handler(hub: Hub, root: Path):
     class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            # The custom header makes a cross-site request need a CORS preflight, which this server
+            # never answers, so other web pages cannot start (paid) Claude runs via localhost.
+            if self.path != "/api/insights/refresh" or self.headers.get("X-Game-Of-Claude") != "1":
+                return self._send(404, "text/plain", b"not found")
+            started = hub.refresh_insights(root)
+            self._send(202 if started else 409, "application/json", json.dumps({"started": started}).encode())
+
         def do_GET(self):
             path = self.path.split("?")[0]
             if path in ("/", "/index.html"):
@@ -166,7 +203,7 @@ def main():
         return
 
     threading.Thread(target=hub.watch, args=(args.interval,), daemon=True).start()
-    srv = ThreadingHTTPServer((args.host, args.port), handler(hub))
+    srv = ThreadingHTTPServer((args.host, args.port), handler(hub, args.projects_dir))
     srv.daemon_threads = True  # open SSE streams must not block Ctrl+C
     url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '') else args.host}:{args.port}/"
     print(f"Game of Claude on {url}  (Ctrl+C to stop)", flush=True)

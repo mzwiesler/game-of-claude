@@ -154,6 +154,11 @@ main.built .group { animation: none; } /* rise only on first load, not on every 
 .sev-low .sev { color: var(--muted); border-color: var(--line); }
 .more summary { padding: 9px 14px; font: 11px var(--mono); color: var(--muted); cursor: pointer; }
 .more summary:hover { color: var(--ink); }
+.md-bar { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding-top: 10px; font: 11px var(--mono); color: var(--muted); }
+.btn.sm { padding: 4px 12px; font-size: 12px; border-radius: 6px; }
+.btn[disabled] { cursor: progress; color: var(--yellow); border-color: var(--yellow-dim); }
+.btn[disabled]::before { content: ""; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .kind { font: 10px var(--mono); color: var(--muted); margin-left: 6px; font-weight: 400; }
 .md { padding: 4px 16px 14px; font-size: 13px; line-height: 1.5; border-left: 1px solid var(--line); }
 @container (max-width: 900px) { .md { border-left: 0; border-top: 1px solid var(--line); } }
@@ -243,9 +248,27 @@ function md(src) {
   return html;
 }
 
-function insightsCard(r) {
+// ↻ Refresh: re-runs insights.py with the Claude review on the server (server.py do_POST)
+function refreshBar(run) {
+  if (SNAPSHOT) return '';
+  const label = run && run.running ? `Refreshing… ${since(run.startedAt, 'idle')}` : '↻ Refresh';
+  return `<div class="md-bar">${run && run.error ? `<span class="err">last refresh failed: ${esc(run.error)}</span>` : run && run.running ? '<span>Claude is reviewing the last 7 days (~20 s)</span>' : ''}
+    <button type="button" class="btn sm" data-act="ins-refresh"${run && run.running ? ' disabled' : ''} title="Re-run the analysis and Claude's top 3 actions now">${label}</button></div>`;
+}
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-act="ins-refresh"]');
+  if (!b || b.disabled) return;
+  b.disabled = true;
+  try {
+    const r = await fetch('api/insights/refresh', { method: 'POST', headers: { 'X-Game-Of-Claude': '1' } });
+    if (r.status === 409) toast('An insights refresh is already running.', 4000);
+    else if (!r.ok) throw new Error(r.status);
+  } catch (err) { b.disabled = false; toast(`<b>Refresh failed</b> (${esc(err.message)}). Is the server running?`, 6000); }
+});
+
+function insightsCard(r, run) {
   if (!r) return card('Insights', 'no report yet', `<div class="empty">No report yet. Run <code>python3 insights.py --claude</code>, `
-    + `or schedule it Mon–Fri with <code>python3 insights.py --install-schedule</code>.</div>`, 'wide');
+    + `or schedule it Mon–Fri with <code>python3 insights.py --install-schedule</code>.</div><div class="md">${refreshBar(run)}</div>`, 'wide');
   const st = r.stats, f = r.findings || [], rv = r.review;
   const code = t => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
   const row = x => `<div class="frow sev-${x.severity}" data-k="ins-${esc(x.id)}">
@@ -255,8 +278,8 @@ function insightsCard(r) {
   const rows = f.length ? main.map(row).join('')
       + (low.length ? `<details class="more"><summary>${low.length} more (low)</summary>${low.map(row).join('')}</details>` : '')
     : '<div class="empty">Nothing to improve found. 🎉</div>';
-  const review = rv && rv.ok ? `<div class="md">${md(rv.markdown)}<div class="who">Claude review · ${esc(rv.model)}</div></div>`
-    : rv ? `<div class="md"><p class="err">Claude review failed: ${esc(rv.error)}</p></div>` : '';
+  const review = `<div class="md">${refreshBar(run)}${rv && rv.ok ? `${md(rv.markdown)}<div class="who">Claude review · ${esc(rv.model)}</div>`
+    : rv ? `<p class="err">Claude review failed: ${esc(rv.error)}</p>` : '<p>No Claude review in this report yet.</p>'}</div>`;
   return card('Insights', `${f.length} findings · last ${r.days} days · ${since(r.generatedAt, 'ago')}`,
     `<div class="ins"><div class="ins-meta">report <b>${esc(r.generatedAt.replace('T', ' ').slice(0, 16))}</b> · ${st.sessions} sessions · ${st.prompts} prompts · `
     + `${fmt(st.outputTokens)} output · ${fmt(st.cacheReadTokens)} cache read · ${st.unsandboxed} unsandboxed · ${st.toolErrors} tool errors</div>`
@@ -343,7 +366,7 @@ function render(d) {
         <div class="st">${ST[s.status]}</div>
         <div class="num opt">${since(s.end, 'idle')}<small>since last</small></div></div>`).join('')
       : '<div class="empty">No open sessions in the last hour.</div>', 'wide att' + (need ? ' hot' : '')),
-    insightsCard(d.insights),
+    insightsCard(d.insights, d.insightsRun),
     card('Activity', `last ${d.daily.length} days`, activityChart(d.daily), 'wide'),
     card('Token mix', fmt(k.totalTokens) + ' total',
       `<div class="split">${TK.map(([key, , c]) => `<i style="flex-grow:${(t[key] || 0) / tsum};background:${c}"></i>`).join('')}</div>

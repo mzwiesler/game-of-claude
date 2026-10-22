@@ -36,6 +36,7 @@ from collect import CLAUDE_DIR, PROJECTS_DIR, _ts
 HERE = Path(__file__).resolve().parent
 DIR = ledger.PATH.parent / "insights"
 KEEP = 60  # dated reports kept
+DAYS = 7  # default look-back window
 TASK = "Claude Telemetry Insights"
 CLAUDE_MODEL = "sonnet"
 CLAUDE_TIMEOUT = 900
@@ -516,7 +517,7 @@ $i = $t | Get-ScheduledTaskInfo
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--days", type=int, default=7, help="look-back window (default 7)")
+    ap.add_argument("--days", type=int, default=DAYS, help=f"look-back window (default {DAYS})")
     ap.add_argument("--projects-dir", type=Path, default=PROJECTS_DIR)
     ap.add_argument("--claude", action="store_true", help="add written recommendations from `claude -p`")
     ap.add_argument("--model", default=CLAUDE_MODEL, help=f"model for --claude (default {CLAUDE_MODEL})")
