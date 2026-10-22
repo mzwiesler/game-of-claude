@@ -138,6 +138,11 @@ In the **Pokémon** theme your real XP level is the *trainer* level, and the are
   Jolteon or Flareon at random. Partners can't grow past the level cap, 15 + 5 × trainer level.
 - **Catch**: a weakened wild Pokémon that isn't in your Pokédex yet gets up to three balls (Poké Ball,
   Great Ball from trainer LV 5, Ultra Ball from LV 12). Rarer and evolved Pokémon break free more often.
+- **Rarity**: every family has a tier, and evolved forms are rarer still. Rough average Claude work time
+  until the first sighting: common (Pidgey, Rattata, Zubat, …) minutes; uncommon (Pikachu, Abra,
+  Growlithe, Scyther, …) about an hour; rare (wild starters, Eevee, Dratini, Chansey, Ditto, fossils,
+  Porygon) about 3 h; very rare (Snorlax, Lapras, Aerodactyl, Dragonite) 15–40 h; legendary birds about
+  120 h; Mewtwo about 240 h. A level-up or a big XP gain lures out rarer ones for two minutes.
 - **Your avatar**: the trainer card lists every caught Pokémon and the Pokédex (seen/caught); click
   one to make it your partner, the Pokémon in the arena.
 - **Snorlax** blocks the path while a session waits for approval; **Pokémon Center** when nothing is
