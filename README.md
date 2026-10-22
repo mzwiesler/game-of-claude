@@ -1,9 +1,10 @@
 # Game of Claude
 
 Live dashboard for your local Claude Code usage, styled like a construction-site status board,
-plus **Game of Claude**: a hero in the top-left arena who levels up with your work.
-Python stdlib only: no install step, and nothing leaves your machine except the opt-in
-`insights.py --claude` review, which goes to Claude like any other prompt.
+plus **Game of Claude**: a hero in the top-left arena who levels up with your work, as a
+Dungeons & Dragons adventurer or a Pokémon trainer. Python stdlib only: no install step, and
+nothing leaves your machine except the opt-in `insights.py --claude` review, which goes to Claude
+like any other prompt (the Pokémon theme also loads its sprite images from GitHub).
 
 ```bash
 python3 app.py                          # own desktop window (see below), starts the server if needed
@@ -117,6 +118,34 @@ The arena (top left) is a Dungeons & Dragons-style dungeon that mirrors your liv
 Click the arena for the character sheet: ability scores, combat stats and W/L record, unlocks,
 XP sources, battle log, achievements, bestiary and the sound toggle.
 
+### Theme: Dungeons & Dragons or Pokémon
+
+Switch with the selector in the character sheet, or open the dashboard with `?theme=pokemon`
+(`?theme=dnd` switches back). The choice is stored per browser; D&D is the default.
+
+In the **Pokémon** theme your real XP level is the *trainer* level, and the arena is a battle field:
+
+- **Starter**: pick Bulbasaur, Charmander, Squirtle or Pikachu (Lv 5) in the trainer card.
+- **Battle** (a session is working): wild Pokémon from the first 150 appear near your partner's
+  level. Evolved forms only show up from their evolution level, legendaries (Articuno, Zapdos,
+  Moltres, Mewtwo) from trainer LV 8 and Lv 50+. The tool Claude is using favours some types (shell:
+  fire/fighting/rock/ground, edits: grass/normal/bug, reading: psychic/water/ice, web:
+  flying/electric, agents: ghost/poison, MCP: electric/rock). Type matchups apply, and real XP gains
+  land as "Claude power" hits.
+- **Level up and evolve**: wins and catches give your partner EXP (Lv³ curve). It evolves at its
+  level; stone evolutions happen at Lv 30, trade evolutions at Lv 36, and Eevee picks Vaporeon,
+  Jolteon or Flareon at random. Partners can't grow past the level cap, 15 + 5 × trainer level.
+- **Catch**: a weakened wild Pokémon that isn't in your Pokédex yet gets up to three balls (Poké Ball,
+  Great Ball from trainer LV 5, Ultra Ball from LV 12). Rarer and evolved Pokémon break free more often.
+- **Your avatar**: the trainer card lists every caught Pokémon and the Pokédex (seen/caught); click
+  one to make it your partner, the Pokémon in the arena.
+- **Snorlax** blocks the path while a session waits for approval; **Pokémon Center** when nothing is
+  open (or after your partner faints, which is cosmetic like the D&D defeats).
+
+Pokémon progress lives in the browser (localStorage). Sprites are not part of this repo: they load
+from the public [PokeAPI sprite repo](https://github.com/PokeAPI/sprites), with drawn placeholders
+when GitHub is unreachable. Fan feature, not affiliated with Nintendo, Game Freak or The Pokémon Company.
+
 ## Data source
 
 Claude Code writes every session as a JSONL transcript to `~/.claude/projects/<project>/<session>.jsonl`
@@ -138,8 +167,9 @@ the ledger).
 - `collect.py`: incremental transcript parser and aggregation (`Collector`)
 - `game.py`: XP rules, levels, unlocks, achievements
 - `ledger.py`: persisted XP ledger and game start
-- `server.py`: HTTP server (`/`, `/game.js`, `/api/stats`, `/api/events`, `/healthz`) and `--export`
+- `server.py`: HTTP server (`/`, `/game.js`, `/poke.js`, `/api/stats`, `/api/events`, `/healthz`) and `--export`
 - `index.html`: the dashboard (vanilla JS, inline SVG charts)
-- `game.js`: arena, hero, enemies and character sheet
+- `game.js`: arena, hero, enemies and character sheet (D&D theme, plus the shared arena styles)
+- `poke.js`: the Pokémon theme: partner, wild Pokémon, catching, evolution, Pokédex
 - `app.py`: desktop window launcher, background server, Windows shortcut (`claude-telemetry.ico`)
 - `test_collect.py`: tests

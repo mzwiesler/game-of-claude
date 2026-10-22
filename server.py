@@ -31,7 +31,7 @@ from collect import PROJECTS_DIR, Collector
 
 HERE = Path(__file__).resolve().parent
 INDEX = HERE / "index.html"
-STATIC = {"/game.js": (HERE / "game.js", "text/javascript; charset=utf-8")}
+STATIC = {f"/{n}": (HERE / n, "text/javascript; charset=utf-8") for n in ("game.js", "poke.js")}
 KEEPALIVE = 15  # seconds between SSE comments, keeps proxies and the browser from closing idle streams
 STALE = 60  # seconds after which a snapshot is rebuilt even without changes
 

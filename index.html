@@ -196,7 +196,19 @@ main.built .group { animation: none; } /* rise only on first load, not on every 
 <div class="tip" id="tip"></div>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
+<script>
+// Arena theme: 'dnd' (game.js, default) or 'pokemon' (poke.js). ?theme=… in the URL sets it; the sheet has a switch.
+window.GAME_THEME = (() => {
+  const ok = t => t === 'dnd' || t === 'pokemon' ? t : null, q = ok(new URLSearchParams(location.search).get('theme'));
+  try { if (q) localStorage.setItem('gameTheme', q); return q || ok(localStorage.getItem('gameTheme')) || 'dnd'; } catch (e) { return q || 'dnd'; }
+})();
+window.setGameTheme = t => {
+  try { localStorage.setItem('gameTheme', t); } catch (e) {}
+  const u = new URL(location.href); u.searchParams.set('theme', t); location.href = u.href;   // reload into the other theme
+};
+</script>
 <script src="game.js"></script>
+<script src="poke.js"></script>
 <script>
 const SNAPSHOT = /*__SNAPSHOT__*/null; // set by `server.py --export`
 const $ = id => document.getElementById(id);
