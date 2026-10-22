@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Game of Claude</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23111'/><path d='M3 12V8m3.3 4V5m3.4 7V7m3.3 5V3' stroke='%23ffd100' stroke-width='2' stroke-linecap='round'/></svg>">
+<style>
+/* Dark status-board look: hazard stripe, grid background, LEDs */
+:root {
+  --bg: #0e0e0d; --panel: #171716; --panel2: #1f1f1d; --line: #2c2b28;
+  --ink: #ecebe6; --muted: #8d8a82; --yellow: #ffd100; --yellow-dim: #a67c00;
+  --ok: #3ddc84; --bad: #ff4d4f; --warn: #ffb020; --blue: #5ab0ff; --violet: #c08bff; --teal: #3ddcc8;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 40px 40px; opacity: .25; }
+.stripe { height: 8px; background: repeating-linear-gradient(-45deg, var(--yellow) 0 14px, #111 14px 28px); background-size: 40px 8px; animation: stripe 1.2s linear infinite; }
+@keyframes stripe { to { background-position: 40px 0; } }
+
+header { position: relative; z-index: 10; display: flex; gap: 24px; align-items: center; padding: 20px 24px; flex-wrap: wrap; }
+h1 { margin: 0; font-size: 26px; letter-spacing: .06em; text-transform: uppercase; font-weight: 800; }
+h1 span { color: var(--yellow); }
+.origin { color: var(--muted); font: 12px var(--mono); margin-top: 6px; }
+.origin b { color: var(--ink); font-weight: 500; }
+
+.stats { display: flex; gap: 12px; margin-left: auto; flex-wrap: wrap; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 16px; min-width: 104px; }
+.stat .v { font: 700 28px var(--mono); font-variant-numeric: tabular-nums; }
+.stat .l { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.stat.ok .v { color: var(--ok); } .stat.bad .v { color: var(--bad); } .stat.y .v { color: var(--yellow); }
+
+.progress { position: relative; z-index: 1; height: 2px; margin: 0 24px; background: var(--line); overflow: hidden; }
+.progress i { display: block; height: 100%; width: 0; background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+.progress i.tick { animation: tick .9s ease-out; }
+@keyframes tick { from { width: 0; opacity: 1; } 70% { width: 100%; opacity: 1; } to { width: 100%; opacity: 0; } }
+.live { display: inline-flex; align-items: center; gap: 6px; }
+.live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.live.on::before { background: var(--ok); box-shadow: 0 0 6px var(--ok); animation: glow 1.4s ease-in-out infinite; }
+.live.off::before { background: var(--bad); }
+.btn { display: flex; align-items: center; gap: 8px; padding: 0 16px; border-radius: 8px; font: 700 13px system-ui, sans-serif; cursor: pointer;
+  color: var(--muted); border: 1px solid var(--line); background: var(--panel); }
+.btn:hover { border-color: var(--yellow-dim); color: var(--ink); }
+.btn.on { color: var(--yellow); border-color: var(--yellow-dim); }
+.btn.blocked { color: var(--bad); border-style: dashed; }
+.toast { position: fixed; z-index: 60; right: 24px; bottom: 24px; max-width: 380px; background: var(--panel2); border: 1px solid var(--yellow-dim); border-radius: 8px;
+  padding: 10px 14px; font-size: 13px; line-height: 1.45; box-shadow: 0 8px 24px #0008; transition: opacity .3s, transform .3s; }
+.toast[hidden] { display: block; opacity: 0; transform: translateY(8px); pointer-events: none; }
+.toast b { color: var(--yellow); }
+.toast code { font: 12px var(--mono); color: var(--ink); }
+@media (max-width: 480px) { .toast { left: 16px; right: 16px; bottom: 16px; max-width: none; } }
+
+.prov { position: relative; z-index: 1; margin: 14px 24px 0; display: flex; gap: 10px; flex-wrap: wrap; align-items: stretch; }
+.prov .lbl { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; align-self: center; }
+.pv { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); min-width: 0; }
+.pv .n { font-weight: 700; font-size: 13px; }
+.pv .t { font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+
+main { position: relative; z-index: 1; padding: 20px 24px 40px; display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); align-items: start; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+.wide { grid-column: 1 / -1; }
+@media (max-width: 480px) { main { grid-template-columns: 1fr; padding: 16px; } header { padding: 16px; } .progress { margin: 0 16px; } .prov { margin: 12px 16px 0; } }
+.group { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; animation: rise .5s both; min-width: 0; }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+.group h2 { margin: 0; padding: 10px 14px; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; display: flex; justify-content: space-between; gap: 12px;
+  border-bottom: 1px solid var(--line); background: linear-gradient(90deg, #ffd1001a, transparent 60%); }
+.group h2 .c { font-family: var(--mono); color: var(--muted); text-transform: none; letter-spacing: 0; }
+
+.row { display: grid; grid-template-columns: 18px 1fr 130px 76px; gap: 10px; align-items: center; padding: 8px 14px; border-bottom: 1px solid #ffffff08; position: relative; }
+.row:last-child { border-bottom: 0; }
+.row.flash::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, #ffd10022, transparent); animation: flash .8s ease-out; pointer-events: none; }
+@keyframes flash { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.led { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); position: relative; }
+.ok .led { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.ok .led::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--ok); animation: ping 2s ease-out infinite; }
+@keyframes ping { from { opacity: .8; transform: scale(.6); } to { opacity: 0; transform: scale(1.8); } }
+.name { min-width: 0; }
+.name .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.name .h { font: 11px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.name .h .p { color: var(--yellow); }
+.num { text-align: right; font: 600 13px var(--mono); font-variant-numeric: tabular-nums; }
+.num small { display: block; color: var(--muted); font-weight: 400; font-size: 11px; }
+.bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--yellow); border-radius: 3px; transition: width .8s cubic-bezier(.2,.9,.2,1); }
+.intro .bar i { animation: grow .9s cubic-bezier(.2,.9,.2,1) both; }
+@keyframes grow { from { width: 0; } }
+main.built .group { animation: none; } /* rise only on first load, not on every pushed update */
+
+.chart { padding: 14px 14px 8px; }
+.chart svg { width: 100%; height: 220px; display: block; overflow: visible; }
+.chart .ax { font: 10px var(--mono); fill: var(--muted); }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart rect.b { fill: var(--yellow); opacity: .85; transition: opacity .15s; }
+.chart rect.b.today { fill: var(--ok); }
+.chart g.d:hover rect.b { opacity: 1; filter: drop-shadow(0 0 6px #ffd10088); }
+.chart path.ln { fill: none; stroke: var(--blue); stroke-width: 2; }
+.chart circle.pt { fill: var(--blue); }
+.legend { display: flex; gap: 16px; padding: 0 14px 12px; font: 11px var(--mono); color: var(--muted); flex-wrap: wrap; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.tip { position: fixed; z-index: 50; pointer-events: none; background: #111; border: 1px solid var(--yellow-dim); border-radius: 6px; padding: 6px 10px;
+  font: 12px var(--mono); color: var(--ink); white-space: pre; opacity: 0; transition: opacity .1s; }
+
+.hours { display: grid; grid-template-columns: repeat(24, 1fr); gap: 4px; padding: 16px 14px 6px; }
+.hours div { aspect-ratio: 1 / 1.6; border-radius: 3px; background: var(--yellow); }
+.hours-ax { display: grid; grid-template-columns: repeat(24, 1fr); gap: 4px; padding: 0 14px 14px; font: 10px var(--mono); color: var(--muted); text-align: center; }
+
+.split { display: flex; height: 14px; margin: 14px; border-radius: 4px; overflow: hidden; background: var(--line); }
+.split i { display: block; height: 100%; transition: flex-grow .8s; }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 16px; padding: 0 14px 14px; font: 12px var(--mono); }
+.kv span:nth-child(odd) { color: var(--muted); }
+.kv span:nth-child(even) { text-align: right; font-variant-numeric: tabular-nums; }
+.kv i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+
+.srow { grid-template-columns: 18px 1fr 70px 70px 90px; }
+@container (max-width: 560px) { .srow { grid-template-columns: 18px 1fr 90px; } .srow .opt { display: none; } }
+.group { container-type: inline-size; }
+.chip { display: inline-block; font: 700 9px var(--mono); letter-spacing: .04em; padding: 0 5px; border-radius: 3px; margin-right: 6px; vertical-align: 1px; color: #111; }
+/* Needs attention: open sessions, the ones waiting for you first */
+.att { border-color: var(--yellow-dim); box-shadow: 0 0 24px #ffd10014; }
+.att.hot { border-color: var(--warn); }
+.arow { grid-template-columns: 18px 1fr 130px 76px; }
+@container (max-width: 560px) { .arow { grid-template-columns: 18px 1fr 96px; } .arow .opt { display: none; } }
+.arow .q { font: 12px system-ui, sans-serif; color: var(--ink); opacity: .75; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st { justify-self: start; font: 700 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 3px 10px; border-radius: 99px; border: 1px solid; white-space: nowrap; }
+.s-approval .st { color: var(--bad); border-color: #ff4d4f66; background: #ff4d4f14; }
+.s-waiting .st { color: var(--yellow); border-color: #ffd10066; background: #ffd10014; }
+.s-working .st, .s-idle .st { color: var(--ok); border-color: #3ddc8466; background: #3ddc8412; }
+.s-approval .led { background: var(--bad); box-shadow: 0 0 10px var(--bad); animation: blink 1s steps(2, start) infinite; }
+.s-waiting .led { background: var(--yellow); box-shadow: 0 0 10px var(--yellow); animation: glow 1.4s ease-in-out infinite; }
+.s-working .led { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.s-working .led::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--ok); animation: ping 2s ease-out infinite; }
+.s-approval, .s-waiting { background: linear-gradient(90deg, #ffd1000d, transparent 50%); }
+@keyframes blink { to { opacity: .25; } }
+@keyframes glow { 50% { box-shadow: 0 0 2px var(--yellow); opacity: .6; } }
+.empty { padding: 40px; color: var(--muted); font-family: var(--mono); }
+.att .empty { padding: 18px 14px; }
+.err { color: var(--bad); }
+/* Insights: daily report from insights.py, rule findings left, Claude's review right */
+.ins { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+@container (max-width: 900px) { .ins { grid-template-columns: 1fr; } }
+.ins-meta { padding: 8px 14px; font: 11px var(--mono); color: var(--muted); border-bottom: 1px solid #ffffff08; grid-column: 1 / -1; }
+.ins-meta b { color: var(--ink); font-weight: 500; }
+.frow { display: grid; grid-template-columns: 62px 1fr; gap: 10px; padding: 9px 14px; border-bottom: 1px solid #ffffff08; }
+.frow .n { font-weight: 600; }
+.frow .h { font: 11px var(--mono); color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.frow .fx { font-size: 12px; margin-top: 3px; opacity: .85; }
+.frow .fx code, .md code { font: 11.5px var(--mono); background: #ffffff10; padding: 0 4px; border-radius: 3px; }
+.sev { justify-self: start; align-self: start; font: 700 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 2px 7px; border-radius: 99px; border: 1px solid; }
+.sev-high .sev { color: var(--bad); border-color: #ff4d4f66; background: #ff4d4f14; }
+.sev-medium .sev { color: var(--warn); border-color: #ffb02066; background: #ffb02014; }
+.sev-low .sev { color: var(--muted); border-color: var(--line); }
+.more summary { padding: 9px 14px; font: 11px var(--mono); color: var(--muted); cursor: pointer; }
+.more summary:hover { color: var(--ink); }
+.kind { font: 10px var(--mono); color: var(--muted); margin-left: 6px; font-weight: 400; }
+.md { padding: 4px 16px 14px; font-size: 13px; line-height: 1.5; border-left: 1px solid var(--line); }
+@container (max-width: 900px) { .md { border-left: 0; border-top: 1px solid var(--line); } }
+.md h3 { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--yellow); margin: 12px 0 4px; }
+.md ol, .md ul { margin: 4px 0; padding-left: 20px; } .md li { margin: 3px 0; } .md p { margin: 6px 0; }
+.md .who { font: 11px var(--mono); color: var(--muted); margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="stripe"></div>
+<header>
+  <div class="arena" id="arena"></div>
+  <div>
+    <h1>Game of <span>Claude</span></h1>
+    <div class="origin" id="origin">connecting…</div>
+  </div>
+  <div class="stats">
+    <div class="stat bad"><div class="v" id="sNeed">0</div><div class="l">needs you</div></div>
+    <div class="stat ok"><div class="v" id="sActive">0</div><div class="l">active now</div></div>
+    <div class="stat y"><div class="v" id="sToday">0</div><div class="l">prompts today</div></div>
+    <div class="stat"><div class="v" id="sSessions">0</div><div class="l">sessions</div></div>
+    <div class="stat"><div class="v" id="sTools">0</div><div class="l">tool calls</div></div>
+    <div class="stat y"><div class="v" id="sOut">0</div><div class="l">output tokens</div></div>
+    <div class="stat ok"><div class="v" id="sCache">0</div><div class="l">cache hit %</div></div>
+    <button type="button" class="btn" id="notify" title="Desktop notification when a session starts waiting for you">🔔 Notify</button>
+  </div>
+</header>
+<div class="progress"><i id="prog"></i></div>
+<div class="prov" id="prov"></div>
+<main id="main"><div class="empty">Reading transcripts…</div></main>
+<div class="tip" id="tip"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="game.js"></script>
+<script>
+const SNAPSHOT = /*__SNAPSHOT__*/null; // set by `server.py --export`
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const MC = ['#ffd100', '#5ab0ff', '#c08bff', '#3ddcc8', '#ff8a5a', '#9a978e'];
+const modelColor = (() => { const m = {}; return n => m[n] ??= MC[Object.keys(m).length % MC.length]; })();
+let built = false, prevSig = {}, prevCards = {}, prevStatus = null, prevInsights = null;
+
+function fmt(n, dec = 1) {
+  n = +n || 0;
+  for (const [d, s] of [[1e9, 'G'], [1e6, 'M'], [1e3, 'k']]) if (Math.abs(n) >= d) return (n / d).toFixed(dec).replace(/\.0$/, '') + s;
+  return String(Math.round(n));
+}
+const ago = iso => { const s = (Date.now() - new Date(iso)) / 1000;
+  return s < 60 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`; };
+const idle = iso => { const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} min` : `${Math.round(s / 3600)} h`; };
+// Relative times tick client-side, so the card HTML only changes when the data does
+const since = (iso, f) => `<span data-since="${iso}" data-f="${f}">${(f === 'idle' ? idle : ago)(iso)}</span>`;
+setInterval(() => document.querySelectorAll('[data-since]').forEach(el => {
+  el.textContent = (el.dataset.f === 'idle' ? idle : ago)(el.dataset.since); }), 1000);
+const shortModel = m => m.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+
+function countTo(el, to, f = v => Math.round(v)) {
+  const from = +el.dataset.v || 0, t0 = performance.now();
+  el.dataset.v = to;
+  // no frames in a hidden tab: set the value directly instead of stalling mid-count
+  if (document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches) { el.textContent = f(to); return; }
+  const step = t => { const k = Math.min(1, (t - t0) / 700), v = from + (to - from) * (1 - Math.pow(1 - k, 3));
+    el.textContent = f(v); if (k < 1) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}
+
+function tip(e, text) { const t = $('tip'); if (!text) { t.style.opacity = 0; return; }
+  t.textContent = text; t.style.opacity = 1;
+  t.style.left = Math.min(e.clientX + 14, innerWidth - t.offsetWidth - 8) + 'px'; t.style.top = (e.clientY + 14) + 'px'; }
+
+// Small Markdown subset for the Claude review: ### headings, - / 1. lists (one level), **bold**, `code`
+function md(src) {
+  const inl = t => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  let html = '', list = '';
+  const close = () => { if (list) { html += `</${list}>`; list = ''; } };
+  for (const line of src.split('\n')) {
+    let m;
+    if ((m = line.match(/^#{1,4}\s+(.*)/))) { close(); html += `<h3>${inl(m[1])}</h3>`; }
+    else if ((m = line.match(/^\s*(?:[-*]|(\d+)\.)\s+(.*)/))) {
+      const tag = m[1] ? 'ol' : 'ul';
+      if (list !== tag) { close(); html += `<${tag}>`; list = tag; }
+      html += `<li>${inl(m[2])}</li>`;
+    } else if (line.trim()) { close(); html += `<p>${inl(line)}</p>`; }
+  }
+  close();
+  return html;
+}
+
+function insightsCard(r) {
+  if (!r) return card('Insights', 'no report yet', `<div class="empty">No report yet. Run <code>python3 insights.py --claude</code>, `
+    + `or schedule it Mon–Fri with <code>python3 insights.py --install-schedule</code>.</div>`, 'wide');
+  const st = r.stats, f = r.findings || [], rv = r.review;
+  const code = t => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
+  const row = x => `<div class="frow sev-${x.severity}" data-k="ins-${esc(x.id)}">
+      <span class="sev">${x.severity}</span>
+      <div><div class="n">${esc(x.title)}<span class="kind">${x.kind}</span></div><div class="h">${esc(x.evidence)}</div><div class="fx">→ ${code(x.fix)}</div></div></div>`;
+  const main = f.filter(x => x.severity !== 'low'), low = f.filter(x => x.severity === 'low');
+  const rows = f.length ? main.map(row).join('')
+      + (low.length ? `<details class="more"><summary>${low.length} more (low)</summary>${low.map(row).join('')}</details>` : '')
+    : '<div class="empty">Nothing to improve found. 🎉</div>';
+  const review = rv && rv.ok ? `<div class="md">${md(rv.markdown)}<div class="who">Claude review · ${esc(rv.model)}</div></div>`
+    : rv ? `<div class="md"><p class="err">Claude review failed: ${esc(rv.error)}</p></div>` : '';
+  return card('Insights', `${f.length} findings · last ${r.days} days · ${since(r.generatedAt, 'ago')}`,
+    `<div class="ins"><div class="ins-meta">report <b>${esc(r.generatedAt.replace('T', ' ').slice(0, 16))}</b> · ${st.sessions} sessions · ${st.prompts} prompts · `
+    + `${fmt(st.outputTokens)} output · ${fmt(st.cacheReadTokens)} cache read · ${st.unsandboxed} unsandboxed · ${st.toolErrors} tool errors</div>`
+    + `<div>${rows}</div>${review}</div>`, 'wide');
+}
+
+function card(title, count, body, cls = '') {
+  return `<section class="group ${cls}" data-card="${title}"><h2>${title}<span class="c">${count}</span></h2>${body}</section>`;
+}
+
+// Daily activity: bars = output tokens, line = prompts
+function activityChart(daily) {
+  if (!daily.length) return '<div class="empty">no data</div>';
+  const W = 1000, H = 220, pl = 44, pr = 36, pt = 10, pb = 24, n = daily.length, bw = (W - pl - pr) / n;
+  const maxT = Math.max(1, ...daily.map(d => d.output_tokens || 0)), maxP = Math.max(1, ...daily.map(d => d.prompts || 0));
+  const y = v => pt + (H - pt - pb) * (1 - v / maxT), yp = v => pt + (H - pt - pb) * (1 - v / maxP);
+  const today = new Date().toLocaleDateString('sv');
+  let g = '';
+  for (let i = 0; i <= 4; i++) { const v = maxT * i / 4;
+    g += `<line class="grid" x1="${pl}" x2="${W - pr}" y1="${y(v)}" y2="${y(v)}"/><text class="ax" x="${pl - 6}" y="${y(v) + 3}" text-anchor="end">${fmt(v, 0)}</text>`;
+    g += `<text class="ax" x="${W - pr + 6}" y="${yp(maxP * i / 4) + 3}">${Math.round(maxP * i / 4)}</text>`; }
+  let line = '', pts = '';
+  daily.forEach((d, i) => {
+    const x = pl + i * bw, h = (H - pt - pb) - (y(d.output_tokens || 0) - pt), cx = x + bw / 2;
+    const t = `${d.date}\n${fmt(d.output_tokens)} output · ${fmt(d.tokens)} total tokens\n${d.prompts || 0} prompts · ${d.sessions || 0} sessions · ${d.tools || 0} tools`;
+    g += `<g class="d" data-tip="${esc(t)}"><rect x="${x}" y="${pt}" width="${bw}" height="${H - pt - pb}" fill="transparent"/>` +
+         `<rect class="b${d.date === today ? ' today' : ''}" x="${x + bw * .15}" y="${y(d.output_tokens || 0)}" width="${bw * .7}" height="${Math.max(0, h)}" rx="2"/></g>`;
+    line += (i ? 'L' : 'M') + cx.toFixed(1) + ' ' + yp(d.prompts || 0).toFixed(1);
+    pts += `<circle class="pt" cx="${cx}" cy="${yp(d.prompts || 0)}" r="2.5"/>`;
+    if (n <= 16 || i % Math.ceil(n / 12) === 0 || i === n - 1) g += `<text class="ax" x="${cx}" y="${H - 6}" text-anchor="middle">${d.date.slice(5)}</text>`;
+  });
+  return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${g}<path class="ln" d="${line}"/>${pts}</svg></div>
+    <div class="legend"><span><i style="background:var(--yellow)"></i>output tokens / day</span><span><i style="background:var(--ok)"></i>today</span><span><i style="background:var(--blue)"></i>prompts / day (right axis)</span></div>`;
+}
+
+function barRows(items, { key, label, sub, val, valSub, color, led }) {
+  const max = Math.max(1, ...items.map(key));
+  return items.map((it, i) => `<div class="row${led && led(it) ? ' ok' : ''}" data-k="${esc(label(it))}">
+    <div class="led" style="${led ? '' : `background:${color ? color(it) : 'var(--yellow-dim)'}`}"></div>
+    <div class="name"><div class="n">${label(it)}</div>${sub ? `<div class="h">${sub(it)}</div>` : ''}</div>
+    <div class="bar"><i style="width:${(key(it) / max * 100).toFixed(1)}%;${color ? `background:${color(it)}` : ''}"></i></div>
+    <div class="num">${val(it)}${valSub ? `<small>${valSub(it)}</small>` : ''}</div></div>`).join('');
+}
+
+function render(d) {
+  const k = d.kpi;
+  $('origin').innerHTML = `${SNAPSHOT ? '<b>static snapshot</b>' : '<span class="live on">live</span>'} · source <b>${esc(d.source)}</b> · ${d.files} transcripts · since <b>${k.firstSeen.slice(0, 10)}</b> · updated <b>${new Date(d.generatedAt).toLocaleTimeString()}</b>`;
+  const p = $('prog'); p.classList.remove('tick'); void p.offsetWidth; p.classList.add('tick');
+  countTo($('sActive'), k.activeNow); countTo($('sToday'), k.today.prompts || 0);
+  countTo($('sSessions'), k.sessions); countTo($('sTools'), k.toolCalls, fmt);
+  countTo($('sOut'), k.outputTokens, fmt); countTo($('sCache'), k.cacheHit * 100, v => v.toFixed(1));
+
+  $('prov').innerHTML = '<span class="lbl">Models</span>' + d.models.map(m =>
+    `<div class="pv"><span class="led" style="background:${modelColor(m.model)};box-shadow:0 0 8px ${modelColor(m.model)}"></span>
+     <div><div class="n">${esc(shortModel(m.model))}</div><div class="t">${fmt(m.turns, 1)} turns · ${fmt(m.output_tokens)} out</div></div></div>`).join('');
+
+  const t = d.tokens, tsum = Object.values(t).reduce((a, b) => a + b, 0) || 1;
+  const TK = [['cache_read_input_tokens', 'cache read', 'var(--ok)'], ['cache_creation_input_tokens', 'cache write', 'var(--blue)'],
+              ['input_tokens', 'input (uncached)', 'var(--violet)'], ['output_tokens', 'output', 'var(--yellow)']];
+  const hmax = Math.max(1, ...d.hours);
+  const today = k.today;
+
+  if (window.GAME) GAME.update(d);
+  const att = d.attention || [], need = att.filter(s => s.status === 'waiting' || s.status === 'approval').length;
+  countTo($('sNeed'), need);
+  setTitle((need ? `(${need}) ` : '') + 'Game of Claude');
+  const ST = { approval: 'approval?', waiting: 'waiting for you', working: 'working', idle: 'idle' };
+  notifyChanges(att, ST);
+  const ins = d.insights && d.insights.generatedAt;
+  if (built && ins && prevInsights !== ins) { // a new insights.py report arrived (e.g. the morning run)
+    const n = d.insights.findings.length;
+    toast(`<b>New insights report:</b> ${n} findings for the last ${d.insights.days} days.`, 10000);
+    if (notifyOn && notifyPerm === 'granted') desktopNote('💡 Claude insights', `${n} findings for the last ${d.insights.days} days`, 'insights');
+  }
+  prevInsights = ins;
+
+  const cards = [
+    card('Needs attention', `${need} waiting · ${att.length} open (last hour)`, att.length ? att.map(s => `
+      <div class="row arow s-${s.status}" data-k="att-${s.id}" data-tip="${esc(`${s.id}\n${s.project}${s.branch ? ' @ ' + s.branch : ''}${s.lastPrompt ? '\n› ' + s.lastPrompt : ''}`)}">
+        <div class="led"></div>
+        <div class="name"><div class="n">${s.models.map(m => `<span class="chip" style="background:${modelColor(m)}">${esc(shortModel(m))}</span>`).join('')}${esc(s.title || '(untitled)')}</div>
+          <div class="h"><span class="p">${esc(s.project)}</span>${s.branch ? ' @ ' + esc(s.branch) : ''}${s.status === 'approval' && s.tool ? ` · pending <b>${esc(s.tool)}</b>` : ''}</div>
+          ${s.lastPrompt ? `<div class="q">› ${esc(s.lastPrompt)}</div>` : ''}</div>
+        <div class="st">${ST[s.status]}</div>
+        <div class="num opt">${since(s.end, 'idle')}<small>since last</small></div></div>`).join('')
+      : '<div class="empty">No open sessions in the last hour.</div>', 'wide att' + (need ? ' hot' : '')),
+    insightsCard(d.insights),
+    card('Activity', `last ${d.daily.length} days`, activityChart(d.daily), 'wide'),
+    card('Token mix', fmt(k.totalTokens) + ' total',
+      `<div class="split">${TK.map(([key, , c]) => `<i style="flex-grow:${(t[key] || 0) / tsum};background:${c}"></i>`).join('')}</div>
+       <div class="kv">${TK.map(([key, l, c]) => `<span><i style="background:${c}"></i>${l}</span><span>${fmt(t[key] || 0)} · ${((t[key] || 0) / tsum * 100).toFixed(1)}%</span>`).join('')}
+       <span>turns (API calls)</span><span>${fmt(k.turns)}</span><span>subagent runs</span><span>${fmt(k.subagents)}</span>
+       <span>tool errors</span><span class="${k.toolErrors ? 'err' : ''}">${fmt(k.toolErrors)} · ${(k.toolErrors / Math.max(1, k.toolCalls) * 100).toFixed(1)}%</span>
+       <span>today</span><span>${fmt(today.output_tokens || 0)} out · ${today.tools || 0} tools · ${today.sessions || 0} sessions</span></div>`),
+    card('Models', `${d.models.length}`, barRows(d.models, {
+      key: m => m.output_tokens, label: m => esc(shortModel(m.model)), color: m => modelColor(m.model),
+      sub: m => `${fmt(m.cache_read_input_tokens + m.cache_creation_input_tokens + m.input_tokens)} in · ${fmt(m.turns)} turns`,
+      val: m => fmt(m.output_tokens), valSub: () => 'output' })),
+    card('Tools', `${fmt(k.toolCalls)} calls`, barRows(d.tools.map(([name, n]) => ({ name, n })), {
+      key: x => x.n, label: x => esc(x.name), val: x => fmt(x.n), valSub: x => (x.n / k.toolCalls * 100).toFixed(1) + '%' })),
+    card('Time of day', 'prompts per hour',
+      `<div class="hours">${d.hours.map((v, h) => `<div data-tip="${h}:00–${h + 1}:00\n${v} prompts" style="opacity:${v ? .15 + .85 * v / hmax : .06}"></div>`).join('')}</div>
+       <div class="hours-ax">${d.hours.map((_, h) => `<span>${h % 3 ? '' : h}</span>`).join('')}</div>`),
+    card('Projects', `top ${d.projects.length}`, barRows(d.projects, {
+      key: p => p.tokens, label: p => esc(p.path.split('/').pop() || p.path),
+      sub: p => `<span class="p">${esc(p.path)}</span> · ${p.sessions || 0} sessions · ${p.prompts} prompts`,
+      val: p => fmt(p.tokens), valSub: p => fmt(p.output_tokens) + ' out' })),
+    card('Recent sessions', `${d.sessions.filter(s => s.active).length} active`, d.sessions.map(s => `
+      <div class="row srow${s.active ? ' ok' : ''}" data-k="${s.id}" data-tip="${esc(`${s.id}\n${s.project}${s.branch ? ' @ ' + s.branch : ''}\n${s.start.replace('T', ' ')} → ${s.end.slice(11)}\nClaude Code ${s.version || '?'}`)}">
+        <div class="led"></div>
+        <div class="name"><div class="n">${s.models.map(m => `<span class="chip" style="background:${modelColor(m)}">${esc(shortModel(m))}</span>`).join('')}${esc(s.title || '(untitled)')}</div>
+          <div class="h"><span class="p">${esc(s.project)}</span> · ${since(s.end, 'ago')} · ${s.minutes} min</div></div>
+        <div class="num opt">${s.prompts}<small>prompts</small></div>
+        <div class="num opt">${s.tools}<small>tools</small></div>
+        <div class="num">${fmt(s.outputTokens)}<small>${fmt(s.tokens)} total</small></div></div>`).join(''), 'wide'),
+  ];
+
+  // Only swap the cards whose HTML changed: no flicker, scroll position and hover stay
+  const main = $('main');
+  if (!built) { main.innerHTML = cards.join(''); main.classList.add('intro'); setTimeout(() => main.classList.remove('intro'), 1200); }
+  const nodes = [...main.children];
+  const changed = [];
+  cards.forEach((h, i) => {
+    if (prevCards[i] === h) return;
+    prevCards[i] = h;
+    if (!built) { changed.push(nodes[i]); return; }
+    const tpl = document.createElement('template');
+    tpl.innerHTML = h;
+    const el = tpl.content.firstElementChild;
+    nodes[i] ? nodes[i].replaceWith(el) : main.append(el);
+    changed.push(el);
+  });
+  // Flash rows whose numbers changed since the last update (live timers excluded)
+  changed.forEach(c => c.querySelectorAll('.row[data-k]').forEach(r => {
+    const t = r.textContent.replace(/\d+(:\d+)?\s?(s|min|h|d)( ago)?|just now/g, '');
+    if (built && r.dataset.k in prevSig && prevSig[r.dataset.k] !== t) r.classList.add('flash');
+    prevSig[r.dataset.k] = t;
+  }));
+  main.classList.add('built');
+  built = true;
+}
+
+// Alerts when a session starts waiting for you while the tab is not in focus:
+// the tab title always flashes (in-page, no permission needed); desktop notifications on top when enabled.
+let baseTitle = document.title, flashMsg = '', flashTimer = 0;
+function setTitle(t) { baseTitle = t; if (!flashTimer) document.title = t; }
+function flashTitle(msg) {
+  flashMsg = msg;
+  if (flashTimer) return;
+  let on = true;
+  flashTimer = setInterval(() => { on = !on; document.title = on ? flashMsg : baseTitle; }, 1000);
+  document.title = flashMsg;
+}
+function stopFlash() { if (!flashTimer) return; clearInterval(flashTimer); flashTimer = 0; document.title = baseTitle; }
+window.addEventListener('focus', stopFlash);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && document.hasFocus()) stopFlash(); });
+
+let toastTimer = 0;
+function toast(html, ms = 6000) {
+  const t = $('toast');
+  t.innerHTML = html; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, ms);
+}
+
+const HOW_TO_ALLOW = 'Click the icon left of the address bar (in an app window: the ⋯ menu → App info / Site permissions) → Notifications → <b>Allow</b>, '
+  + 'or remove this site from “Not allowed” in <code>chrome://settings/content/notifications</code> (Edge: <code>edge://settings/content/notifications</code>). '
+  + 'On Windows also check Settings → System → Notifications for the browser.';
+let notifyOn = false, notifyPerm = 'Notification' in window ? 'default' : 'unsupported';
+try { notifyOn = localStorage.getItem('notify') === '1'; } catch (e) {}
+
+// Notification.permission can lag behind or disagree with the real setting (e.g. headless/app contexts),
+// navigator.permissions reports it reliably and tells us when the user changes it in site settings
+async function readPerm() {
+  if (notifyPerm === 'unsupported') return;
+  try {
+    const st = await navigator.permissions.query({ name: 'notifications' });
+    st.onchange = () => { notifyPerm = st.state === 'prompt' ? 'default' : st.state; paintNotify(); };
+    notifyPerm = st.state === 'prompt' ? 'default' : st.state;
+  } catch (e) { notifyPerm = Notification.permission; }
+}
+function paintNotify() {
+  const b = $('notify'), on = notifyOn && notifyPerm === 'granted';
+  const blocked = notifyPerm === 'denied' || notifyPerm === 'unsupported';
+  b.classList.toggle('on', on); b.classList.toggle('blocked', blocked);
+  b.textContent = on ? '🔔 Notify on' : blocked ? (notifyPerm === 'denied' ? '🔕 Blocked' : '🔕 Unsupported') : '🔕 Notify off';
+  b.title = on ? 'Desktop notifications on: click to turn off'
+    : notifyPerm === 'denied' ? 'Notifications are blocked for this site in the browser. ' + HOW_TO_ALLOW.replace(/<[^>]+>/g, '') + ' The tab title still flashes.'
+    : notifyPerm === 'unsupported' ? 'This browser cannot show desktop notifications here. The tab title still flashes.'
+    : 'Click to get a desktop notification when a session starts waiting for you';
+}
+function desktopNote(title, body, tag) {
+  try {
+    const n = new Notification(title, { body, tag });
+    n.onclick = () => { window.focus(); n.close(); };
+    return true;
+  } catch (e) { return false; } // e.g. Android Chrome only allows ServiceWorker notifications
+}
+$('notify').onclick = async () => {
+  if (notifyOn && notifyPerm === 'granted') { notifyOn = false; toast('Desktop notifications <b>off</b>. The tab title still flashes when a session waits.', 3500); }
+  else {
+    await readPerm();
+    if (notifyPerm === 'default') {
+      toast('Waiting for the browser’s permission prompt…', 15000);
+      try { notifyPerm = await Notification.requestPermission(); } catch (e) { notifyPerm = 'denied'; }
+      if (notifyPerm === 'default') { paintNotify(); return toast('The permission prompt was <b>dismissed</b> (or the browser hid it, look for a bell in the address bar). Click again to retry.', 8000); }
+    }
+    if (notifyPerm === 'granted' && !desktopNote('🔔 Notifications enabled', 'You will be notified when a Claude session waits for you.', 'notify-test')) notifyPerm = 'unsupported';
+    if (notifyPerm === 'denied') { paintNotify(); return toast('<b>Notifications are blocked</b> for this site. ' + HOW_TO_ALLOW, 15000); }
+    if (notifyPerm === 'unsupported') { paintNotify(); return toast('This browser cannot show desktop notifications here. The tab title will flash instead.', 8000); }
+    notifyOn = true;
+    toast('Desktop notifications <b>on</b>. A test notification was sent.', 3500);
+  }
+  try { localStorage.setItem('notify', notifyOn ? '1' : '0'); } catch (e) {}
+  paintNotify();
+};
+paintNotify();
+readPerm().then(paintNotify);
+if (SNAPSHOT) $('notify').style.display = 'none';
+
+function notifyChanges(att, ST) {
+  const now = Object.fromEntries(att.map(s => [s.id, s.status]));
+  const need = att.filter(s => s.status === 'waiting' || s.status === 'approval').length;
+  if (!need) stopFlash();
+  else if (prevStatus && (document.hidden || !document.hasFocus())) {
+    const fresh = att.filter(s => (s.status === 'waiting' || s.status === 'approval') && prevStatus[s.id] !== undefined && prevStatus[s.id] !== s.status);
+    if (fresh.length || flashTimer) flashTitle(`${fresh.some(s => s.status === 'approval') ? '⛔' : '💬'} (${need}) waiting…`);
+    if (notifyOn && notifyPerm === 'granted') for (const s of fresh)
+      desktopNote(`${s.status === 'approval' ? '⛔' : '💬'} ${s.title || s.project}`, `${ST[s.status]} · ${s.project}${s.lastPrompt ? '\n› ' + s.lastPrompt : ''}`, s.id);
+  }
+  prevStatus = now;
+}
+
+document.addEventListener('mousemove', e => { const el = e.target.closest('[data-tip]'); tip(e, el && el.dataset.tip); });
+
+// Server pushes a snapshot only when a transcript or a session status changed (server.py)
+function connect() {
+  const es = new EventSource('api/events');
+  es.onmessage = e => render(JSON.parse(e.data));
+  es.onerror = () => { // EventSource reconnects on its own (retry: 2000)
+    const l = document.querySelector('#origin .live');
+    if (l) { l.className = 'live off'; l.textContent = 'reconnecting…'; }
+    else $('origin').innerHTML = '<span class="live off">no connection to server, retrying…</span>';
+  };
+}
+
+if (SNAPSHOT) render(SNAPSHOT);
+else connect();
+</script>
+</body>
+</html>

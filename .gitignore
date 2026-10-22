@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.claude/
+# dotfiles bind-mounted by the Claude Code sandbox
+.bash_profile
+.bashrc
+.gitconfig
+.gitmodules
+.idea/
+.idea
+.mcp.json
+.profile
+.ripgreprc
+.vscode
+.zprofile
+.zshrc
