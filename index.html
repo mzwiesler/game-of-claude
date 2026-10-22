@@ -125,6 +125,10 @@ main.built .group { animation: none; } /* rise only on first load, not on every 
 @container (max-width: 560px) { .arow { grid-template-columns: 18px 1fr 96px; } .arow .opt { display: none; } }
 .arow .q { font: 12px system-ui, sans-serif; color: var(--ink); opacity: .75; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .st { justify-self: start; font: 700 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 3px 10px; border-radius: 99px; border: 1px solid; white-space: nowrap; }
+.rs { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; margin-top: 4px; padding: 1px 7px; font: 11px var(--mono); color: var(--muted);
+  background: none; border: 1px dashed var(--line); border-radius: 4px; cursor: copy; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.rs:hover, .rs:focus-visible { color: var(--yellow); border-color: var(--yellow-dim); }
+.rs.ok { color: var(--ok); border-color: var(--ok); }
 .s-approval .st { color: var(--bad); border-color: #ff4d4f66; background: #ff4d4f14; }
 .s-waiting .st { color: var(--yellow); border-color: #ffd10066; background: #ffd10014; }
 .s-working .st, .s-idle .st { color: var(--ok); border-color: #3ddc8466; background: #3ddc8412; }
@@ -362,7 +366,8 @@ function render(d) {
         <div class="led"></div>
         <div class="name"><div class="n">${s.models.map(m => `<span class="chip" style="background:${modelColor(m)}">${esc(shortModel(m))}</span>`).join('')}${esc(s.title || '(untitled)')}</div>
           <div class="h"><span class="p">${esc(s.project)}</span>${s.branch ? ' @ ' + esc(s.branch) : ''}${s.status === 'approval' && s.tool ? ` · pending <b>${esc(s.tool)}</b>` : ''}</div>
-          ${s.lastPrompt ? `<div class="q">› ${esc(s.lastPrompt)}</div>` : ''}</div>
+          ${s.lastPrompt ? `<div class="q">› ${esc(s.lastPrompt)}</div>` : ''}
+          <button type="button" class="rs" data-act="copy-resume" data-cmd="${esc('claude --resume ' + s.id)}" title="Copy the resume command (run it in ${esc(s.project)})">claude --resume ${esc(s.id)} ⧉</button></div>
         <div class="st">${ST[s.status]}</div>
         <div class="num opt">${since(s.end, 'idle')}<small>since last</small></div></div>`).join('')
       : '<div class="empty">No open sessions in the last hour.</div>', 'wide att' + (need ? ' hot' : '')),
@@ -436,6 +441,20 @@ function flashTitle(msg) {
 function stopFlash() { if (!flashTimer) return; clearInterval(flashTimer); flashTimer = 0; document.title = baseTitle; }
 window.addEventListener('focus', stopFlash);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && document.hasFocus()) stopFlash(); });
+
+document.addEventListener('click', async e => { // copy `claude --resume <id>` from a Needs attention row
+  const b = e.target.closest('[data-act="copy-resume"]');
+  if (!b) return;
+  const cmd = b.dataset.cmd;
+  try { await navigator.clipboard.writeText(cmd); }
+  catch { // no async clipboard (insecure origin, e.g. an exported snapshot opened from disk)
+    const ta = Object.assign(document.createElement('textarea'), { value: cmd });
+    document.body.append(ta); ta.select(); const ok = document.execCommand('copy'); ta.remove();
+    if (!ok) return toast(`Copy failed, select it by hand: <code>${esc(cmd)}</code>`, 8000);
+  }
+  b.classList.add('ok');
+  toast(`Copied <code>${esc(cmd)}</code>`, 2500);
+});
 
 let toastTimer = 0;
 function toast(html, ms = 6000) {
