@@ -13,7 +13,7 @@ python3 server.py --port 9000 --days 60 --no-browser
 python3 server.py --export report.html  # static one-file snapshot (e.g. to mail around)
 python3 collect.py                      # raw JSON
 python3 server.py --new-game            # reset the hero to level 1 (old ledger is kept as backup)
-python3 -m unittest test_collect test_insights  # tests
+python3 -m unittest test_collect test_insights test_pokesave  # tests
 ```
 
 ## Insights (daily report)
@@ -132,8 +132,9 @@ In the **Pokémon** theme your real XP level is the *trainer* level, and the are
   fire/fighting/rock/ground, edits: grass/normal/bug, reading: psychic/water/ice, web:
   flying/electric, agents: ghost/poison, MCP: electric/rock). Type matchups apply, and real XP gains
   land as "Claude power" hits.
-- **Level up and evolve**: wins and catches give your partner EXP (Lv³ curve). It evolves at its
-  level; stone evolutions happen at Lv 30, trade evolutions at Lv 36, and Eevee picks Vaporeon,
+- **Level up and evolve**: wins and catches give your partner EXP (Lv³ curve, 1/25 of the games'
+  battle EXP since a battle ends every few seconds: the first evolution at Lv 16 takes about three
+  hours of Claude work); real XP counts 1:1. It evolves at its level; stone evolutions happen at Lv 30, trade evolutions at Lv 36, and Eevee picks Vaporeon,
   Jolteon or Flareon at random. Partners can't grow past the level cap, 15 + 5 × trainer level.
 - **Catch**: a weakened wild Pokémon that isn't in your Pokédex yet gets up to three balls (Poké Ball,
   Great Ball from trainer LV 5, Ultra Ball from LV 12). Rarer and evolved Pokémon break free more often.
@@ -142,7 +143,10 @@ In the **Pokémon** theme your real XP level is the *trainer* level, and the are
 - **Snorlax** blocks the path while a session waits for approval; **Pokémon Center** when nothing is
   open (or after your partner faints, which is cosmetic like the D&D defeats).
 
-Pokémon progress lives in the browser (localStorage). Sprites are not part of this repo: they load
+Pokémon progress is saved next to the XP ledger as `pokemon.json` (`pokesave.py`, via `/api/pokemon`),
+so every browser shares it and clearing site data loses nothing; the browser keeps a copy for static
+snapshots and while the server is down. Saves from several windows merge: no caught Pokémon is lost,
+the copy with more EXP wins. Switching to the D&D theme freezes it as it is. Sprites are not part of this repo: they load
 from the public [PokeAPI sprite repo](https://github.com/PokeAPI/sprites), with drawn placeholders
 when GitHub is unreachable. Fan feature, not affiliated with Nintendo, Game Freak or The Pokémon Company.
 
@@ -171,5 +175,6 @@ the ledger).
 - `index.html`: the dashboard (vanilla JS, inline SVG charts)
 - `game.js`: arena, hero, enemies and character sheet (D&D theme, plus the shared arena styles)
 - `poke.js`: the Pokémon theme: partner, wild Pokémon, catching, evolution, Pokédex
+- `pokesave.py`: the Pokémon save on disk (`pokemon.json` next to the ledger), merged on every write
 - `app.py`: desktop window launcher, background server, Windows shortcut (`claude-telemetry.ico`)
 - `test_collect.py`: tests

@@ -12,7 +12,8 @@ parsed) and pushes a new snapshot via Server-Sent Events (/api/events) only when
 changed, including status changes without new records (e.g. "approval?" after 30 s).
 The game counts only what happened since its start (first run or --new-game). The XP ledger
 (ledger.py) keeps the start and the XP of deleted transcripts; it is written at most every
-30 s while something changes, and on exit.
+30 s while something changes, and on exit. The Pokémon theme's save (pokesave.py) lives next to
+the ledger as pokemon.json (/api/pokemon).
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from pathlib import Path
 
 import insights
 import ledger
+import pokesave
 from collect import PROJECTS_DIR, Collector
 
 HERE = Path(__file__).resolve().parent
@@ -42,6 +44,7 @@ class Hub:
 
     def __init__(self, root: Path, days: int, ledger_path: Path | None = ledger.PATH):
         self.collector, self.days = Collector(root, ledger_path), days
+        self.poke_path = pokesave.path_for(ledger_path)
         self.lock = threading.Lock()
         self.cond = threading.Condition()
         self.version, self.data = 0, b"{}"
@@ -110,9 +113,19 @@ def handler(hub: Hub, root: Path):
     class H(BaseHTTPRequestHandler):
         def do_POST(self):
             # The custom header makes a cross-site request need a CORS preflight, which this server
-            # never answers, so other web pages cannot start (paid) Claude runs via localhost.
-            if self.path != "/api/insights/refresh" or self.headers.get("X-Game-Of-Claude") != "1":
+            # never answers, so other web pages cannot start (paid) Claude runs or overwrite the
+            # Pokémon save via localhost.
+            if self.path not in ("/api/insights/refresh", "/api/pokemon") or self.headers.get("X-Game-Of-Claude") != "1":
                 return self._send(404, "text/plain", b"not found")
+            if self.path == "/api/pokemon":
+                n = int(self.headers.get("Content-Length") or 0)
+                if not 0 < n <= pokesave.MAX_BYTES:
+                    return self._send(413, "text/plain", b"too large")
+                try:
+                    doc = json.loads(self.rfile.read(n))
+                except ValueError:
+                    return self._send(400, "text/plain", b"bad json")
+                return self._send(200, "application/json", json.dumps(pokesave.update(hub.poke_path, doc)).encode())
             started = hub.refresh_insights(root)
             self._send(202 if started else 409, "application/json", json.dumps({"started": started}).encode())
 
@@ -127,6 +140,8 @@ def handler(hub: Hub, root: Path):
                 self._send(200, "application/json", hub.data)
             elif path == "/api/events":
                 self._stream()
+            elif path == "/api/pokemon":
+                self._send(200, "application/json", json.dumps(pokesave.load(hub.poke_path)).encode())
             elif path == "/healthz":
                 self._send(200, "text/plain", b"ok")
             else:

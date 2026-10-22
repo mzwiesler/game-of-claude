@@ -57,6 +57,8 @@
   const power = id => id === 129 ? .5 : LEGEND.has(id) ? 1.35 : RARE.has(id) ? 1.05 : [.85, 1, 1.15][stage(id)];
   const catchRate = id => LEGEND.has(id) ? .03 : RARE.has(id) ? .12 : [.35, .2, .1][stage(id)];
   const yieldExp = id => LEGEND.has(id) ? 270 : RARE.has(id) ? 160 : [64, 142, 220][stage(id)];
+  // battles end every ~10 s while Claude works, so EXP is 1/25 of the games' formula: first evolution (Lv 16) after ~3 h of work
+  const winExp = (id, L) => Math.max(1, Math.round(yieldExp(id) * L / 7 / 25));
   // super effective (a hits these harder); RESIST and the reverse of SUPER count as not very effective
   const SUPER = { f: 'g b i', w: 'f r gr', g: 'w r gr', e: 'w fl', i: 'g fl gr d', fi: 'n r i', p: 'g b', gr: 'f e r p', fl: 'g fi b',
     ps: 'fi p', b: 'g ps p', r: 'f i fl b', gh: 'gh ps', d: 'd' };
@@ -82,16 +84,44 @@
     gate: ['Snorlax blocks the path!', 'Approve to wake it up!', 'Play the Poké Flute (approve)!'],
   };
 
-  // ---------- Save (this browser) ----------
-  const KEY = 'pokeSave';
-  const blank = () => ({ v: 1, partner: null, box: [], seen: {}, w: 0, l: 0, n: 1 });
+  // ---------- Save: on disk next to the XP ledger (server.py /api/pokemon, pokesave.py); localStorage is
+  // the cache and the fallback (static snapshot, server down) ----------
+  const KEY = 'pokeSave', REMOTE = location.protocol.startsWith('http');
+  const blank = () => ({ v: 1, partner: null, box: [], seen: {}, w: 0, l: 0 });
   const read = () => { try { const p = JSON.parse(store.get(KEY) || 'null'); return p && Array.isArray(p.box) ? Object.assign(blank(), p) : blank(); } catch (e) { return blank(); } };
   const P = read();
-  function save() {   // merge with what another dashboard tab may have written meanwhile
-    const o = read(), mine = new Map(P.box.map(m => [m.u, m]));
-    for (const m of o.box) { const x = mine.get(m.u); if (!x) P.box.push(m); else if (m.exp > x.exp && m.id === x.id) x.exp = m.exp; }
-    Object.assign(P.seen, o.seen); P.w = Math.max(P.w, o.w); P.l = Math.max(P.l, o.l); P.n = Math.max(P.n, o.n, ...P.box.map(m => m.u + 1));
+  let lastU = 0;
+  const uid = () => (lastU = Math.max(lastU + 1, Date.now() * 100 + rint(0, 99)));   // unique across browsers, so saves merge cleanly
+  P.box.forEach(m => { if (m.u < 1e9) { const u = uid(); if (P.partner === m.u) P.partner = u; m.u = u; } });   // older saves numbered them 1, 2, 3…
+  function mergeIn(o) {   // same rules as pokesave.merge: every Pokémon is kept, the copy with more EXP wins (it may have evolved)
+    const mine = new Map(P.box.map(m => [m.u, m]));
+    for (const m of o.box || []) { const x = mine.get(m.u); if (!x) P.box.push({ ...m }); else if (m.exp > x.exp) Object.assign(x, m); }
+    Object.assign(P.seen, o.seen); P.w = Math.max(P.w, o.w || 0); P.l = Math.max(P.l, o.l || 0);
+    if (!P.box.some(m => m.u === P.partner) && o.partner) P.partner = o.partner;
+  }
+  let pushT = 0;
+  function save() {   // merge with what another dashboard tab may have written meanwhile, then sync to disk
+    mergeIn(read());
     store.set(KEY, JSON.stringify(P));
+    if (REMOTE) { clearTimeout(pushT); pushT = setTimeout(push, 1500); }
+  }
+  async function push() {
+    try {
+      const r = await fetch('/api/pokemon', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Game-Of-Claude': '1' }, body: JSON.stringify(P) });
+      if (r.ok) { mergeIn(await r.json()); store.set(KEY, JSON.stringify(P)); }
+    } catch (e) {}   // server down: the next save pushes the cached copy
+  }
+  async function pull() {   // on start: merge the disk save in (nothing is dropped) and upload a browser-only save
+    try {
+      const r = await fetch('/api/pokemon');
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d.partner && d.box.some(m => m.u === d.partner)) P.partner = d.partner;   // the partner chosen last, in any browser
+      mergeIn(d); store.set(KEY, JSON.stringify(P));
+      push();
+      if (S.scene) { S.phhp = pmax(); S.wild = null; S.busy = false; setScene(pickScene(S.att), true); }
+      if (sheetOpen()) openSheet();
+    } catch (e) {}
   }
   const partner = () => P.box.find(m => m.u === P.partner) || null;
   const caught = id => P.box.some(m => m.id === id);
@@ -99,7 +129,7 @@
   const trainerLv = () => S.game?.level || 1;
   const levelCap = () => Math.min(100, 15 + 5 * trainerLv());
   const ball = () => [...BALLS].reverse().find(b => trainerLv() >= b.lv);
-  function addMon(id, L) { const m = { u: P.n++, id, exp: L ** 3, at: Date.now() }; P.box.push(m); P.seen[id] = 1; return m; }
+  function addMon(id, L) { const m = { u: uid(), id, exp: L ** 3, at: Date.now() }; P.box.push(m); P.seen[id] = 1; return m; }
 
   // ---------- Sound (WebAudio, synthesized) ----------
   let actx = null;
@@ -417,7 +447,7 @@
   function faint(en) {
     S.busy = true; en.classList.add('dead'); SFX.faint();
     P.w++;
-    const exp = Math.round(yieldExp(S.wild) * S.wl / 7);
+    const exp = winExp(S.wild, S.wl);
     float(150, 44, `${NAMES[S.wild]} fainted`, 'xp');
     setTimeout(() => float(150, 56, `+${exp} EXP`, 'loot'), 250);
     gainExp(exp);
@@ -451,7 +481,7 @@
       addMon(id, wl); P.w++;
       SFX.gotcha();
       banner('GOTCHA!', `${NAMES[id]} was caught! · Lv ${wl} · Pokédex ${new Set(P.box.map(x => x.id)).size}/150`);
-      gainExp(Math.round(yieldExp(id) * wl / 7));
+      gainExp(winExp(id, wl));
       setTimeout(() => { g.remove(); S.busy = false; S.wild = null; if (S.scene?.kind === 'battle' && !S.ko && !S.evolving) spawn(); }, 1800);
     }, wait);
   }
@@ -518,7 +548,7 @@
       const gain = g.xp - S.xp;
       float(100, 66, `+${gain} XP`, 'xp');
       attack(gain);
-      gainExp(gain * 5);
+      gainExp(gain);   // real XP counts 1:1
       if (gain >= 50) S.rare = Date.now();   // a big deed draws out a rare one
     }
     const seen = +store.get('pokeTrainerLevel') || 0;
@@ -595,7 +625,7 @@
             `${seen ? img(id) : '<span class="q unk">?</span>'}<span>${no(id)} ${seen ? esc(NAMES[id]) : ''}</span></button>`; }).join('')}</div></section>
         <section style="grid-column:1/-1"><h4>Badges</h4><div class="ach badges">${g.achievements.map(a =>
           `<div class="${a.on ? 'on' : ''}">${esc(a.name)}<small>${esc(a.desc)}</small></div>`).join('')}</div></section>
-      </div><p style="padding:0 18px 12px;font-size:11px;color:var(--muted)">Pokémon progress is stored in this browser. Fan feature, not affiliated with Nintendo, Game Freak or The Pokémon Company; sprites load from the PokeAPI sprite repo.</p></div></div>`);
+      </div><p style="padding:0 18px 12px;font-size:11px;color:var(--muted)">Pokémon progress is saved next to the XP ledger (pokemon.json), with a copy in this browser. Fan feature, not affiliated with Nintendo, Game Freak or The Pokémon Company; sprites load from the PokeAPI sprite repo.</p></div></div>`);
     const bg = document.querySelector('.sheet-bg');
     if (scroll) bg.querySelector('.sheet').scrollTop = scroll;
     bg.onclick = e => {
@@ -613,4 +643,5 @@
   addEventListener('keydown', e => { if (e.key === 'Escape' && sheetOpen()) closeSheet(); });
 
   window.GAME = { update, open: openSheet };
+  if (REMOTE) pull();
 })();
