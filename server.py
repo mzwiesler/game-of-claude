@@ -13,7 +13,9 @@ changed, including status changes without new records (e.g. "approval?" after 30
 The game counts only what happened since its start (first run or --new-game). The XP ledger
 (ledger.py) keeps the start and the XP of deleted transcripts; it is written at most every
 30 s while something changes, and on exit. The Pokémon theme's save (pokesave.py) lives next to
-the ledger as pokemon.json (/api/pokemon).
+the ledger as pokemon.json (/api/pokemon). The Security card shows security.py's newest report
+with acknowledged findings flagged (/api/security/refresh re-scans, /api/security/ack marks one
+reviewed); --export leaves the security report out.
 """
 from __future__ import annotations
 
@@ -29,6 +31,7 @@ from pathlib import Path
 import insights
 import ledger
 import pokesave
+import security
 from collect import PROJECTS_DIR, Collector
 
 HERE = Path(__file__).resolve().parent
@@ -49,6 +52,8 @@ class Hub:
         self.cond = threading.Condition()
         self.version, self.data = 0, b"{}"
         self.ins_run = {"running": False, "startedAt": None, "error": None}  # dashboard-triggered insights run
+        self.sec_run = {"running": False, "startedAt": None, "error": None}  # dashboard-triggered security scan
+        self.ack_lock = threading.Lock()
 
     def refresh_insights(self, root: Path) -> bool:
         """Re-runs insights.py with the Claude review in the background (one run at a time).
@@ -77,10 +82,45 @@ class Hub:
             self.build()
         return True
 
-    def build(self):
+    def refresh_security(self, root: Path) -> bool:
+        """Re-runs security.py in the background (local only, no cost; one run at a time).
+        False if a run is already going."""
+        with self.cond:
+            if self.sec_run["running"]:
+                return False
+            self.sec_run = {"running": True, "startedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "error": None}
+
+        def work():
+            error = None
+            try:
+                security.save(security.run(security.DAYS, root))
+            except Exception as e:  # shown in the card, the server keeps running
+                error = repr(e)[:300]
+            with self.cond:
+                self.sec_run = {"running": False, "startedAt": None, "error": error}
+            with self.lock:
+                self.build()
+
+        threading.Thread(target=work, daemon=True).start()
+        with self.lock:
+            self.build()
+        return True
+
+    def ack_security(self, fp: str, undo: bool) -> bool:
+        with self.ack_lock:
+            ok = security.ack(fp, security.latest(), undo)
+        if ok:
+            with self.lock:
+                self.build()
+        return ok
+
+    def build(self, export: bool = False):
         snap = self.collector.snapshot(self.days, refresh=False)
         snap["insights"] = insights.latest()  # newest insights.py report, picked up within STALE seconds
         snap["insightsRun"] = self.ins_run
+        if not export:  # the exported snapshot gets mailed around: no security report in it
+            snap["security"] = security.with_acks(security.latest(), security.load_acks())
+            snap["securityRun"] = self.sec_run
         data = json.dumps(snap, default=str).encode()
         with self.cond:
             self.version += 1
@@ -115,8 +155,22 @@ def handler(hub: Hub, root: Path):
             # The custom header makes a cross-site request need a CORS preflight, which this server
             # never answers, so other web pages cannot start (paid) Claude runs or overwrite the
             # Pokémon save via localhost.
-            if self.path not in ("/api/insights/refresh", "/api/pokemon") or self.headers.get("X-Game-Of-Claude") != "1":
+            if self.path not in ("/api/insights/refresh", "/api/pokemon", "/api/security/refresh", "/api/security/ack") \
+                    or self.headers.get("X-Game-Of-Claude") != "1":
                 return self._send(404, "text/plain", b"not found")
+            if self.path == "/api/security/refresh":
+                started = hub.refresh_security(root)
+                return self._send(202 if started else 409, "application/json", json.dumps({"started": started}).encode())
+            if self.path == "/api/security/ack":
+                n = int(self.headers.get("Content-Length") or 0)
+                try:
+                    body = json.loads(self.rfile.read(n)) if 0 < n <= 4096 else None
+                    fp, undo = body["fp"], bool(body.get("undo"))
+                    assert isinstance(fp, str)
+                except (ValueError, TypeError, KeyError, AssertionError):
+                    return self._send(400, "text/plain", b"expects {fp} or {fp, undo: true}")
+                ok = hub.ack_security(fp, undo)
+                return self._send(200 if ok else 404, "application/json", json.dumps({"ok": ok}).encode())
             if self.path == "/api/pokemon":
                 n = int(self.headers.get("Content-Length") or 0)
                 if not 0 < n <= pokesave.MAX_BYTES:
@@ -208,6 +262,7 @@ def main():
           f"{len(hub.collector.archived())} archived in {args.ledger}", flush=True)
 
     if args.export:
+        hub.build(export=True)
         data = hub.data.decode().replace("</", "<\\/")
         html = INDEX.read_text(encoding="utf-8").replace("/*__SNAPSHOT__*/null", data)
         for name, (f, _) in STATIC.items():  # one self-contained file
