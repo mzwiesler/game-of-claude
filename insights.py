@@ -3,7 +3,7 @@
     python3 insights.py                       # analyse the last 7 days, save the report, print the findings
     python3 insights.py --claude              # plus written recommendations from `claude -p` (no tools, no transcript)
     python3 insights.py --days 14 --json      # print the whole report as JSON
-    python3 insights.py --install-schedule    # Windows Task Scheduler: Mon–Fri 07:30 with --claude (--at HH:MM)
+    python3 insights.py --install-schedule    # Windows Task Scheduler: Mon–Fri 07:30 with --claude, then security.py (--at HH:MM)
     python3 insights.py --schedule-status | --uninstall-schedule
 
 Rules (FINDINGS below) look for friction that a setting, hook or script removes for good:
@@ -480,7 +480,9 @@ def install_schedule(at: str, model: str, dry: bool) -> None:
         raise SystemExit("--at expects HH:MM")
     distro = os.environ.get("WSL_DISTRO_NAME", "Ubuntu")
     log = ledger.PATH.parent / "insights" / "run.log"
-    sh = f"mkdir -p {log.parent} && {{ date; {sys.executable} {HERE / 'insights.py'} --claude --model {model}; }} >> {log} 2>&1"
+    # the security scan runs right after, so the morning report covers both (no Claude involved there)
+    sh = (f"mkdir -p {log.parent} && {{ date; {sys.executable} {HERE / 'insights.py'} --claude --model {model}; "
+          f"{sys.executable} {HERE / 'security.py'}; }} >> {log} 2>&1")
     args = f"wsl.exe -d {distro} --cd ~ -- bash -lc \"{sh}\""
     script = f"""
 $a = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument {app.ps_str('--headless ' + args)}
@@ -523,7 +525,7 @@ def main():
     ap.add_argument("--model", default=CLAUDE_MODEL, help=f"model for --claude (default {CLAUDE_MODEL})")
     ap.add_argument("--json", action="store_true", help="print the report as JSON")
     ap.add_argument("--no-save", action="store_true", help="do not write the report files")
-    ap.add_argument("--install-schedule", action="store_true", help="run Mon–Fri via Windows Task Scheduler")
+    ap.add_argument("--install-schedule", action="store_true", help="run Mon–Fri via Windows Task Scheduler (plus security.py)")
     ap.add_argument("--at", default="07:30", help="time for --install-schedule (HH:MM, default 07:30)")
     ap.add_argument("--uninstall-schedule", action="store_true")
     ap.add_argument("--schedule-status", action="store_true")

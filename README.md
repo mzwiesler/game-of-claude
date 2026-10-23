@@ -13,7 +13,7 @@ python3 server.py --port 9000 --days 60 --no-browser
 python3 server.py --export report.html  # static one-file snapshot (e.g. to mail around)
 python3 collect.py                      # raw JSON
 python3 server.py --new-game            # reset the hero to level 1 (old ledger is kept as backup)
-python3 -m unittest test_collect test_insights test_pokesave  # tests
+python3 -m unittest test_collect test_insights test_pokesave test_security  # tests
 ```
 
 ## Insights (daily report)
@@ -34,7 +34,7 @@ cannot trigger paid runs through the localhost server).
 python3 insights.py                     # rules only, saves the report and prints it
 python3 insights.py --claude            # plus Claude's recommendations
 python3 insights.py --days 14 --json
-python3 insights.py --install-schedule  # Windows Task Scheduler, Mon–Fri 07:30 with --claude (--at HH:MM)
+python3 insights.py --install-schedule  # Windows Task Scheduler, Mon–Fri 07:30 with --claude, then security.py (--at HH:MM)
 python3 insights.py --schedule-status | --uninstall-schedule
 python3 -m unittest test_insights
 ```
@@ -42,6 +42,48 @@ python3 -m unittest test_insights
 Reports: `~/.local/share/claude-telemetry/insights/<date>.json` and `latest.json` (60 kept), run log
 `run.log` next to them. The task starts WSL itself via `wsl.exe` (hidden console) and catches up a
 missed run when the PC was off or asleep at 07:30.
+
+## Security
+
+`security.py` answers two questions about the last 7 days: did Claude get to see something it should
+not have (everything it reads is sent to Anthropic as part of the conversation), and did it do, or
+could it have done, something that harms the company. It scans the transcripts (only real prompts,
+tool inputs and tool outputs: the system prompt and tool descriptions quote the sandbox texts and do
+not count) plus `~/.claude/settings.json`, the managed settings and each seen repo's
+`.claude/settings*.json` and `.mcp.json`. The dashboard shows the newest report in the **Security**
+card: a status dot (red: open high finding, yellow: open medium, green: all clear), findings grouped
+Leaks · Events · Posture with evidence, fix and the sessions (click to copy `claude --resume <id>`),
+the checks that passed, and a toast / desktop note when a new report has an open high finding.
+
+- **Leaks**: secrets (API keys, tokens, JWTs, private keys, connection-string passwords …), credential
+  files read (`~/.ssh`, `~/.aws`, `.env`, …) and environment dumps, files outside the session's
+  project, IBANs and card numbers.
+- **Events**: commands outside the sandbox (grouped by network / writes outside the project / excluded
+  commands), "blocked, then re-run outside the sandbox", hosts the sandbox blocked, risky commands
+  (`curl | sh`, `sudo`, force push, `terraform apply`, uploads …), actions in your name (git, gh, MCP
+  writes per server), writes to production targets, outward actions right after web reads, and
+  `bypassPermissions` sessions.
+- **Posture**: sandbox settings, broad or MCP-write allow rules, plugins from outside marketplaces,
+  hooks that fetch remote code, and an inventory of plugins and MCP servers.
+
+Severity: **high** means something sensitive likely reached Claude, or something risky happened that
+you or an allow rule approved (auto-mode approvals make it medium); any secret or credential file
+read and any production write is always high. **✓ reviewed** folds a finding away until it happens in
+a new session or gets worse (it then shows "came back"). The report never holds a full secret (first
+4 and last 2 characters plus length), nothing is sent anywhere, and `server.py --export` leaves it out.
+
+```bash
+python3 security.py                 # scan, save the report, print it (a few seconds)
+python3 security.py --days 14 --json
+python3 security.py --no-save
+python3 -m unittest test_security
+```
+
+Reports: `~/.local/share/claude-telemetry/security/<date>.json` and `latest.json` (60 kept), reviews in
+`acks.json` next to them. The scheduled insights task runs the scan right after the insights report;
+**↻ Scan** in the card runs it now (`POST /api/security/refresh`, `POST /api/security/ack`, both with
+the same custom header as the other POSTs). Production targets (`PROD`), trusted plugin marketplaces
+and known registry hosts are constants at the top of `security.py`.
 
 ## Desktop window
 
@@ -176,7 +218,8 @@ the ledger).
 - `collect.py`: incremental transcript parser and aggregation (`Collector`)
 - `game.py`: XP rules, levels, unlocks, achievements
 - `ledger.py`: persisted XP ledger and game start
-- `server.py`: HTTP server (`/`, `/game.js`, `/poke.js`, `/api/stats`, `/api/events`, `/healthz`) and `--export`
+- `server.py`: HTTP server (`/`, `/game.js`, `/poke.js`, `/api/stats`, `/api/events`, `/healthz`, the insights / security POSTs) and `--export`
+- `security.py`: security scan of transcripts and settings (Security card)
 - `index.html`: the dashboard (vanilla JS, inline SVG charts)
 - `game.js`: arena, hero, enemies and character sheet (D&D theme, plus the shared arena styles)
 - `poke.js`: the Pokémon theme: partner, wild Pokémon, catching, evolution, Pokédex
