@@ -194,6 +194,7 @@ main.built .group { animation: none; } /* rise only on first load, not on every 
 .filters select option { background: var(--panel2); color: var(--ink); }
 .filters .scope { font: 11px var(--mono); color: var(--muted); }
 .filters .scope b { color: var(--yellow); font-weight: 600; }
+.filters .scope code { font: 11px var(--mono); color: var(--ink); background: #ffffff10; padding: 1px 5px; border-radius: 3px; }
 .filters .clear { padding: 6px 12px; }
 .pv { transition: border-color .15s, background .15s; }
 .pv[data-act] { cursor: pointer; }
@@ -453,7 +454,11 @@ function filtered(d, f) {
 // Filter bar: options sorted by name and only rewritten when they change, so an open dropdown stays open
 let prevFilterHtml = '';
 function filterBar(d, v) {
-  if (!d.facets) return;
+  if (!d.facets) { // a server started before the filters existed sends no facets
+    const html = SNAPSHOT ? '' : '<span class="lbl">Filter</span><span class="scope">needs a server restart: <code>python3 app.py --stop &amp;&amp; python3 app.py</code></span>';
+    if (html !== prevFilterHtml) { $('filters').innerHTML = html; prevFilterHtml = html; }
+    return;
+  }
   const repos = [...new Set(d.facets.map(s => s.repo))], models = [...new Set(d.facets.flatMap(s => Object.keys(s.models)))];
   for (const [k, list] of [['repo', repos], ['model', models]]) if (filter[k] && !list.includes(filter[k])) list.push(filter[k]);
   const name = r => r.split('/').pop() || r;
@@ -609,14 +614,15 @@ function render(d, quiet = false) {
       key: p => p.tokens, label: p => esc(p.path.split('/').pop() || p.path), pick: d.facets && (p => ['repo', p.path]),
       sub: p => `<span class="p">${esc(p.path)}</span> · ${p.sessions || 0} sessions · ${p.prompts} prompts`,
       val: p => fmt(p.tokens), valSub: p => fmt(p.output_tokens) + ' out' }) + L.foot); })(),
-    card('Recent sessions', `${v.sessions.filter(s => s.active).length} active`, v.sessions.length ? v.sessions.map(s => `
+    (() => { const L = limited('sessions', v.sessions);
+      return card('Recent sessions', `${v.sessions.filter(s => s.active).length} active · last ${v.sessions.length}`, L.items.length ? L.items.map(s => `
       <div class="row srow${s.active ? ' ok' : ''}" data-k="${s.id}" data-tip="${esc(`${s.id}\n${s.project}${s.branch ? ' @ ' + s.branch : ''}\n${s.start.replace('T', ' ')} → ${s.end.slice(11)}\nClaude Code ${s.version || '?'}`)}">
         <div class="led"></div>
         <div class="name"><div class="n">${s.models.map(m => `<span class="chip" style="background:${modelColor(m)}">${esc(shortModel(m))}</span>`).join('')}${esc(s.title || '(untitled)')}</div>
           <div class="h"><span class="p">${esc(s.project)}</span> · ${since(s.end, 'ago')} · ${s.minutes} min</div></div>
         <div class="num opt">${s.prompts}<small>prompts</small></div>
         <div class="num opt">${s.tools}<small>tools</small></div>
-        <div class="num">${fmt(s.outputTokens)}<small>${fmt(s.tokens)} total</small></div></div>`).join('') : '<div class="empty">No sessions match the filter.</div>', 'wide'),
+        <div class="num">${fmt(s.outputTokens)}<small>${fmt(s.tokens)} total</small></div></div>`).join('') + L.foot : '<div class="empty">No sessions match the filter.</div>', 'wide'); })(),
   ].filter(Boolean); // the Security card is left out of exported snapshots
 
   // Only swap the cards whose HTML changed: no flicker, scroll position and hover stay

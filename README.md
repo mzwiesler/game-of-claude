@@ -126,7 +126,7 @@ Tools, Time of day, Projects and Recent sessions are then re-aggregated in the b
 per-session counters in the snapshot (`facets`); Needs attention, Insights and Security stay
 unfiltered. With a model filter, tokens and turns count that model only, prompts, tools and hours
 count the sessions that used it. `?repo=~/repos/x&model=claude-opus-5-5` in the URL sets the filter.
-Tools and Projects show the top 5 with **Show all**; Activity switches between 7, 14 and 30 days.
+Tools, Projects and Recent sessions show the top 5 with **Show all**; Activity switches between 7, 14 and 30 days.
 The filter, opened lists and range are remembered per browser.
 
 ## Game of Claude
