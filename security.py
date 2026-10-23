@@ -47,8 +47,9 @@ HOME = str(Path.home())
 # Writes to these count as production (MCP server names, Terraform workspaces); matched as words
 PROD = ("prod", "prd", "production")
 PROD_RE = re.compile(r"(?<![a-z])(" + "|".join(PROD) + r")(?![a-z])", re.I)
-# Plugin marketplaces that are official or the company's own
-TRUSTED_MARKETPLACES = ("claude-plugins-official", "builtin", "lwe", "werkbank")
+# Plugin marketplaces that are official; your own (e.g. the company's) go in config.json "trustedMarketplaces"
+TRUSTED_MARKETPLACES = ("claude-plugins-official", "builtin")
+CONFIG = Path(__file__).resolve().parent / "config.json"  # local and gitignored, see config.example.json
 # Blocked hosts that are package registries or Claude Code's own endpoints: low, not medium
 KNOWN_HOSTS = ("pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "registry.terraform.io",
                "releases.hashicorp.com", "checkpoint-api.hashicorp.com", "proxy.golang.org", "sum.golang.org", "crates.io",
@@ -190,6 +191,15 @@ ESCAPES = (("excluded", "Excluded commands ran on the Windows host, with no sand
 TEST_HOST = re.compile(r"(?:^|\.)(?:example(?:\.com|\.net|\.org)?|test|invalid|localhost)$")  # RFC 2606: never a real target
 INJECT_WINDOW = 10  # tool calls after untrusted content in which an outward action counts (check 9)
 RERUN_WINDOW = 5  # tool calls after a sandbox block in which an unsandboxed re-run counts (check 5)
+
+
+def trusted_marketplaces(path: Path | None = None) -> tuple[str, ...]:
+    """The official marketplaces plus config.json "trustedMarketplaces" (missing or broken file: none)."""
+    try:
+        extra = json.loads((path or CONFIG).read_text(encoding="utf-8")).get("trustedMarketplaces") or []
+    except (OSError, ValueError, AttributeError):
+        extra = []
+    return TRUSTED_MARKETPLACES + tuple(m for m in extra if isinstance(m, str) and m not in TRUSTED_MARKETPLACES)
 
 
 _keys: dict[Path, bytes] = {}
@@ -940,10 +950,11 @@ def posture(settings: dict, calls: list, passed: list) -> list[dict]:
 
     # extensions: plugins by marketplace, MCP servers seen in tool calls
     plugins = {k: v for d in settings.values() for k, v in (d.get("enabledPlugins") or {}).items() if v is True}
-    foreign = sorted(p for p in plugins if p.rpartition("@")[2] not in TRUSTED_MARKETPLACES)
+    trusted = trusted_marketplaces()
+    foreign = sorted(p for p in plugins if p.rpartition("@")[2] not in trusted)
     for p in foreign:
         F.append(finding(f"posture:plugin:{p}", "posture", "medium", f"Plugin from an outside marketplace: {p}",
-                         f"marketplace `{p.rpartition('@')[2]}` is not one of {', '.join(TRUSTED_MARKETPLACES)}",
+                         f"marketplace `{p.rpartition('@')[2]}` is not one of {', '.join(trusted)}",
                          "Check its hooks and MCP servers, or disable it in `enabledPlugins`.", group="posture"))
     if not foreign:
         passed.append("Plugins only from trusted marketplaces")

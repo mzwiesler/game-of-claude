@@ -14,3 +14,6 @@ __pycache__/
 .vscode
 .zprofile
 .zshrc
+# local only: own marketplaces (security.py), design notes
+config.json
+docs/superpowers/

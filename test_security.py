@@ -73,7 +73,7 @@ SAMPLE_SETTINGS = {
                               "mcp__mcp-atlassian__jira_search"],
                     "deny": ["Edit(~/.claude/settings.json)"]},
     "sandbox": {"enabled": True, "allowUnsandboxedCommands": True, "excludedCommands": ["powershell.exe *"],
-                "network": {"allowedDomains": ["*.liebherr.com", "github.com", "pypi.org"]},
+                "network": {"allowedDomains": ["*.example.com", "github.com", "pypi.org"]},
                 "filesystem": {"denyRead": ["~/.zshrc.local*"], "allowWrite": ["~/.cache"]},
                 "credentials": {"files": [{"path": "~/.zshrc.local", "mode": "deny"}]}},
     "enabledPlugins": {"superpowers@claude-plugins-official": True, "odd@some-marketplace": True, "off@elsewhere": False},
@@ -86,9 +86,11 @@ class SecurityTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.key_path, security.KEY_PATH = security.KEY_PATH, self.root / "keys" / ".key"  # never the real install key
+        self.config, security.CONFIG = security.CONFIG, self.root / "config.json"  # nor the local config
 
     def tearDown(self):
         security.KEY_PATH = self.key_path
+        security.CONFIG = self.config
         self.tmp.cleanup()
 
     def write(self, name, records):
@@ -256,6 +258,17 @@ class SecurityTest(unittest.TestCase):
         security.ack("risky:sudo", rep, out_dir=out)
         rep["findings"] = [dict(x, severity="high") if x["fp"] == "risky:sudo" else x for x in rep["findings"]]
         self.assertTrue({x["fp"]: x for x in security.with_acks(rep, security.load_acks(out))["findings"]}["risky:sudo"]["cameBack"])
+
+    def test_trusted_marketplaces_from_config(self):
+        self.write("a", [prompt(0, "go")])
+        _, f = self.report(SAMPLE_SETTINGS)
+        self.assertIn("posture:plugin:odd@some-marketplace", f)
+        security.CONFIG.write_text(json.dumps({"trustedMarketplaces": ["some-marketplace", 7]}))
+        self.assertEqual(security.trusted_marketplaces(), ("claude-plugins-official", "builtin", "some-marketplace"))
+        _, f = self.report(SAMPLE_SETTINGS)
+        self.assertNotIn("posture:plugin:odd@some-marketplace", f)
+        security.CONFIG.write_text("{broken")
+        self.assertEqual(security.trusted_marketplaces(), security.TRUSTED_MARKETPLACES)
 
     def test_bypass_mode_is_high(self):
         self.write("a", [prompt(0, "go", permissionMode="bypassPermissions")])

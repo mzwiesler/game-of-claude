@@ -55,6 +55,10 @@ card: a status dot (red: open high finding, yellow: open medium, green: all clea
 Leaks · Events · Posture with evidence, fix and the sessions (click to copy `claude --resume <id>`),
 the checks that passed, and a toast / desktop note when a new report has an open high finding.
 
+Plugins count as trusted when they come from `claude-plugins-official` or `builtin`; add your own
+marketplaces (e.g. your company's) in a local `config.json` next to `security.py`, which git ignores:
+`cp config.example.json config.json` and list them under `"trustedMarketplaces"`.
+
 - **Leaks**: secrets (API keys, tokens, JWTs, private keys, connection-string passwords …), credential
   files read (`~/.ssh`, `~/.aws`, `.env`, …) and environment dumps, files outside the session's
   project, IBANs and card numbers.
