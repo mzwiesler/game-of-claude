@@ -147,7 +147,7 @@ new game starts. XP per task (`game.py`):
 | MCP tool call | 3 | | Bug slain (a tool failed, then the same tool worked) | 8 |
 | 1k output tokens | 1 | | Subagent sent | 8 |
 
-Level *L* needs 250·(L−1)² XP. Levels bring titles and unlocks (cape, glowing blade, battle sounds,
+Level *L* needs 125·(L−1)² XP. Levels bring titles and unlocks (cape, glowing blade, battle sounds,
 shield, helmet, dragon familiar, critical hits, aura, twin blades, wings, lightning, crown) plus 15
 achievements.
 

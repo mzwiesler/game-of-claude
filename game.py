@@ -28,7 +28,7 @@ XP = {
     "kilotoken": (1, "1k output tokens"),
 }
 
-LEVEL_XP = 250  # tuned so a busy day is worth roughly a third of a level around level 15
+LEVEL_XP = 125  # tuned so a busy day is worth roughly two thirds of a level around level 15
 
 # (level, title)
 TITLES = [
@@ -56,7 +56,7 @@ UNLOCKS = [
 
 
 def level_for(xp: int) -> int:
-    """Level L needs 250 * (L-1)^2 XP: 250, 1000, 2250 … each level takes a bit longer."""
+    """Level L needs 125 * (L-1)^2 XP: 125, 500, 1125 … each level takes a bit longer."""
     lvl = 1
     while LEVEL_XP * lvl * lvl <= xp:
         lvl += 1
