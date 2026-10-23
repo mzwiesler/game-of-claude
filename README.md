@@ -235,3 +235,11 @@ the ledger).
 - `pokesave.py`: the Pokémon save on disk (`pokemon.json` next to the ledger), merged on every write
 - `app.py`: desktop window launcher, background server, Windows shortcut (`claude-telemetry.ico`)
 - `test_collect.py`: tests
+- `LICENSE`, `THIRD_PARTY_NOTICES.md`: license and third-party notices
+
+## License
+
+MIT, see [`LICENSE`](LICENSE). No third-party code or assets are bundled; what is used at runtime
+(Python, Claude Code, the browser, the PokeAPI sprites) and the trademarks involved are listed in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Pokémon and Dungeons & Dragons are trademarks of
+their owners; the themes are unofficial fan features.
