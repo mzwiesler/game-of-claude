@@ -182,6 +182,39 @@ main.built .group { animation: none; } /* rise only on first load, not on every 
 .kind.back { color: var(--bad); font-weight: 700; }
 .passed { margin: 0; padding: 4px 14px 12px 34px; font: 11.5px var(--mono); color: var(--muted); }
 .passed li { margin: 3px 0; } .passed li::marker { content: "✓  "; color: var(--ok); }
+/* Filters: repo / model re-aggregate the cards from the per-session facets; rows and model pills are clickable */
+.filters { position: relative; z-index: 1; margin: 12px 24px 0; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.filters .lbl { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.sel-wrap { position: relative; display: inline-flex; align-items: center; }
+.sel-wrap::after { content: "▾"; position: absolute; right: 10px; pointer-events: none; color: var(--muted); font-size: 11px; }
+.filters select { appearance: none; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 7px 28px 7px 12px;
+  font: 600 13px system-ui, sans-serif; cursor: pointer; max-width: 320px; text-overflow: ellipsis; transition: border-color .15s; }
+.filters select:hover, .filters select:focus-visible { border-color: var(--yellow-dim); outline: none; }
+.filters select.on { border-color: var(--yellow); color: var(--yellow); box-shadow: 0 0 0 3px #ffd10014; }
+.filters select option { background: var(--panel2); color: var(--ink); }
+.filters .scope { font: 11px var(--mono); color: var(--muted); }
+.filters .scope b { color: var(--yellow); font-weight: 600; }
+.filters .clear { padding: 6px 12px; }
+.pv { transition: border-color .15s, background .15s; }
+.pv[data-act] { cursor: pointer; }
+.pv[data-act]:hover { border-color: var(--yellow-dim); }
+.pv.sel { border-color: var(--yellow); background: linear-gradient(90deg, #ffd10014, var(--panel)); }
+.prov.dim .pv:not(.sel) { opacity: .5; }
+.row { transition: background .15s; }
+.row.click { cursor: pointer; }
+.row.click:hover { background: #ffffff07; }
+.row.click:hover .name .n { color: var(--yellow); }
+.row.sel { background: linear-gradient(90deg, #ffd10018, transparent 70%); box-shadow: inset 3px 0 0 var(--yellow); }
+.group { transition: border-color .2s; }
+.group:hover { border-color: #3a3934; }
+.foot { display: flex; justify-content: center; padding: 8px 14px 10px; border-top: 1px solid #ffffff08; }
+.foot .btn { padding: 4px 14px; font-size: 12px; border-radius: 99px; }
+.seg { display: inline-flex; margin-left: auto; border: 1px solid var(--line); border-radius: 99px; overflow: hidden; }
+.seg button { background: none; border: 0; color: var(--muted); font: 600 11px var(--mono); padding: 3px 10px; cursor: pointer; }
+.seg button:hover { color: var(--ink); }
+.seg button.on { background: var(--yellow); color: #111; }
+.legend { align-items: center; }
+@media (max-width: 480px) { .filters { margin: 12px 16px 0; } .filters select { max-width: calc(100vw - 32px); } }
 </style>
 </head>
 <body>
@@ -205,6 +238,7 @@ main.built .group { animation: none; } /* rise only on first load, not on every 
 </header>
 <div class="progress"><i id="prog"></i></div>
 <div class="prov" id="prov"></div>
+<div class="filters" id="filters"></div>
 <main id="main"><div class="empty">Reading transcripts…</div></main>
 <div class="tip" id="tip"></div>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
@@ -229,6 +263,12 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 const MC = ['#ffd100', '#5ab0ff', '#c08bff', '#3ddcc8', '#ff8a5a', '#9a978e'];
 const modelColor = (() => { const m = {}; return n => m[n] ??= MC[Object.keys(m).length % MC.length]; })();
 let built = false, prevSig = {}, prevCards = {}, prevStatus = null, prevInsights = null, prevSecurity = null;
+// View state, remembered per browser: repo / model filter, lists opened to "show all", activity range in days
+const pref = (k, def) => { try { return JSON.parse(localStorage.getItem('dash.' + k)) ?? def; } catch (e) { return def; } };
+const setPref = (k, v) => { try { localStorage.setItem('dash.' + k, JSON.stringify(v)); } catch (e) {} };
+let lastData = null, filter = Object.assign({ repo: '', model: '' }, pref('filter', {})), expanded = new Set(pref('expanded', [])), range = pref('range', 30);
+for (const k of ['repo', 'model']) { const q = new URLSearchParams(location.search).get(k); if (q !== null) filter[k] = q; } // ?repo=…&model=… links
+const TOP = 5;
 
 function fmt(n, dec = 1) {
   n = +n || 0;
@@ -361,12 +401,100 @@ document.addEventListener('click', async e => {
   } catch (err) { b.disabled = false; toast(`<b>${ack ? 'Saving the review' : 'Scan'} failed</b> (${esc(err.message)}). Is the server running?`, 6000); }
 });
 
+// Repo / model filter: re-aggregates the per-session facets (collect.facet) into the snapshot's shape.
+// With a model filter, tokens and turns count that model only; prompts, tools and hours count the sessions that used it.
+const TOKEN_KEYS = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
+const tsum = t => TOKEN_KEYS.reduce((a, k) => a + ((t || {})[k] || 0), 0);
+const vsum = o => Object.values(o || {}).reduce((a, b) => a + b, 0);
+const add = (a, b) => { for (const k in b) a[k] = (a[k] || 0) + b[k]; return a; };
+const filtering = d => !!(d.facets && (filter.repo || filter.model));
+function filtered(d, f) {
+  const ss = d.facets.filter(s => (!f.repo || s.repo === f.repo) && (!f.model || s.models[f.model]));
+  const main = ss.filter(s => !s.sub), now = Date.now(), today = new Date().toLocaleDateString('sv');
+  const tok = s => (f.model ? s.models[f.model] : s.tokens) || {};
+  const dayTok = (s, day) => (f.model && s.modelDays ? (s.modelDays[day] || {})[f.model] : s.days[day]) || {};
+  const tokens = {}, tools = {}, hours = Array(24).fill(0), models = {}, projects = {};
+  const daily = Object.fromEntries(d.daily.map(x => [x.date, { date: x.date }]));
+  let prompts = 0, turns = 0, errors = 0;
+  for (const s of ss) {
+    const t = tok(s);
+    for (const k of TOKEN_KEYS) tokens[k] = (tokens[k] || 0) + (t[k] || 0);
+    turns += f.model ? t.turns || 0 : s.turns;
+    prompts += s.prompts; errors += s.errors; add(tools, s.tools);
+    for (const h in s.hours) hours[h] += s.hours[h];
+    for (const m in s.models) if (!f.model || m === f.model) add(models[m] ??= {}, s.models[m]);
+    for (const day in s.days) {
+      const c = daily[day] ??= { date: day }, dt = dayTok(s, day);
+      add(c, { prompts: s.days[day].prompts || 0, tools: s.days[day].tools || 0, turns: dt.turns || 0, output_tokens: dt.output_tokens || 0, tokens: dt.tokens || 0 });
+    }
+    const p = projects[s.repo] ??= { path: s.repo, tokens: 0, output_tokens: 0, prompts: 0, tools: 0, sessions: 0 };
+    add(p, { tokens: tsum(t), output_tokens: t.output_tokens || 0, prompts: s.prompts, tools: vsum(s.tools) });
+  }
+  for (const s of main) { add(daily[s.start.slice(0, 10)] ??= { date: s.start.slice(0, 10) }, { sessions: 1 }); projects[s.repo].sessions++; }
+  const cin = (tokens.cache_read_input_tokens || 0) + (tokens.cache_creation_input_tokens || 0) + (tokens.input_tokens || 0);
+  const active = s => now - new Date(s.end) < 600e3;
+  return { ...d, scope: { sessions: main.length, of: d.facets.filter(s => !s.sub).length },
+    kpi: { ...d.kpi, sessions: main.length, subagents: ss.length - main.length, prompts, turns, toolCalls: vsum(tools), toolErrors: errors,
+      outputTokens: tokens.output_tokens || 0, totalTokens: tsum(tokens), cacheHit: cin ? (tokens.cache_read_input_tokens || 0) / cin : 0,
+      today: daily[today] || {} },
+    tokens, hours,
+    daily: d.daily.map(x => daily[x.date]),
+    models: Object.entries(models).map(([model, c]) => ({ model, ...c })).sort((a, b) => b.output_tokens - a.output_tokens),
+    tools: Object.entries(tools).sort((a, b) => b[1] - a[1]),
+    projects: Object.values(projects).sort((a, b) => b.tokens - a.tokens),
+    sessions: main.sort((a, b) => b.end.localeCompare(a.end)).slice(0, 25).map(s => ({
+      id: s.id, title: s.title, project: s.project, branch: s.branch, version: s.version, start: s.start, end: s.end,
+      minutes: Math.round((new Date(s.end) - new Date(s.start)) / 6e3) / 10, prompts: s.prompts, turns: s.turns, tools: vsum(s.tools),
+      outputTokens: s.tokens.output_tokens || 0, tokens: tsum(s.tokens),
+      models: Object.keys(s.models).sort((a, b) => s.models[b].output_tokens - s.models[a].output_tokens), active: active(s) })),
+  };
+}
+
+// Filter bar: options sorted by name and only rewritten when they change, so an open dropdown stays open
+let prevFilterHtml = '';
+function filterBar(d, v) {
+  if (!d.facets) return;
+  const repos = [...new Set(d.facets.map(s => s.repo))], models = [...new Set(d.facets.flatMap(s => Object.keys(s.models)))];
+  for (const [k, list] of [['repo', repos], ['model', models]]) if (filter[k] && !list.includes(filter[k])) list.push(filter[k]);
+  const name = r => r.split('/').pop() || r;
+  repos.sort((a, b) => name(a).localeCompare(name(b))); models.sort();
+  const sel = (key, list, all, label) => `<span class="sel-wrap"><select data-filter="${key}" class="${filter[key] ? 'on' : ''}" aria-label="Filter by ${key}">
+    <option value="">${all}</option>${list.map(x => `<option value="${esc(x)}"${x === filter[key] ? ' selected' : ''}>${esc(label(x))}</option>`).join('')}</select></span>`;
+  const html = `<span class="lbl">Filter</span>${sel('repo', repos, 'All repos', r => `${name(r)}  ·  ${r}`)}${sel('model', models, 'All models', shortModel)}`
+    + (filter.repo || filter.model ? '<button type="button" class="btn sm clear" data-act="clear-filter">✕ Clear</button>' : '') + '<span class="scope" id="scope"></span>';
+  if (html !== prevFilterHtml) { $('filters').innerHTML = html; prevFilterHtml = html; }
+  $('scope').innerHTML = v.scope ? `showing <b>${v.scope.sessions}</b> of ${v.scope.of} sessions · live status and reports stay unfiltered` : '';
+}
+function setFilter(key, val) {
+  filter[key] = val || '';
+  setPref('filter', filter);
+  if (lastData) render(lastData, true);
+}
+document.addEventListener('change', e => { const s = e.target.closest('[data-filter]'); if (s) setFilter(s.dataset.filter, s.value); });
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-act="filter"], [data-act="clear-filter"], [data-act="expand"], [data-act="range"]');
+  if (!b) return;
+  const a = b.dataset.act;
+  if (a === 'clear-filter') { filter = { repo: '', model: '' }; return setFilter('repo', ''); }
+  if (a === 'filter') return setFilter(b.dataset.key, filter[b.dataset.key] === b.dataset.val ? '' : b.dataset.val); // click again to drop it
+  if (a === 'expand') { expanded.has(b.dataset.id) ? expanded.delete(b.dataset.id) : expanded.add(b.dataset.id); setPref('expanded', [...expanded]); }
+  if (a === 'range') { range = +b.dataset.n; setPref('range', range); }
+  if (lastData) render(lastData, true);
+});
+// Top 5 of a list, the rest behind "Show all"
+function limited(id, items) {
+  const open = expanded.has(id), more = items.length - TOP;
+  return { items: open ? items : items.slice(0, TOP), foot: more > 0
+    ? `<div class="foot"><button type="button" class="btn" data-act="expand" data-id="${id}">${open ? `Show top ${TOP}` : `Show all ${items.length} ▾`}</button></div>` : '' };
+}
+
 function card(title, count, body, cls = '') {
   return `<section class="group ${cls}" data-card="${title}"><h2>${title}<span class="c">${count}</span></h2>${body}</section>`;
 }
 
 // Daily activity: bars = output tokens, line = prompts
 function activityChart(daily) {
+  daily = daily.slice(-range);
   if (!daily.length) return '<div class="empty">no data</div>';
   const W = 1000, H = 220, pl = 44, pr = 36, pt = 10, pb = 24, n = daily.length, bw = (W - pl - pr) / n;
   const maxT = Math.max(1, ...daily.map(d => d.output_tokens || 0)), maxP = Math.max(1, ...daily.map(d => d.prompts || 0));
@@ -387,34 +515,40 @@ function activityChart(daily) {
     if (n <= 16 || i % Math.ceil(n / 12) === 0 || i === n - 1) g += `<text class="ax" x="${cx}" y="${H - 6}" text-anchor="middle">${d.date.slice(5)}</text>`;
   });
   return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${g}<path class="ln" d="${line}"/>${pts}</svg></div>
-    <div class="legend"><span><i style="background:var(--yellow)"></i>output tokens / day</span><span><i style="background:var(--ok)"></i>today</span><span><i style="background:var(--blue)"></i>prompts / day (right axis)</span></div>`;
+    <div class="legend"><span><i style="background:var(--yellow)"></i>output tokens / day</span><span><i style="background:var(--ok)"></i>today</span><span><i style="background:var(--blue)"></i>prompts / day (right axis)</span>
+    <span class="seg">${[7, 14, 30].map(n => `<button type="button" data-act="range" data-n="${n}" class="${range === n ? 'on' : ''}">${n}d</button>`).join('')}</span></div>`;
 }
 
-function barRows(items, { key, label, sub, val, valSub, color, led }) {
+function barRows(items, { key, label, sub, val, valSub, color, led, pick }) {
   const max = Math.max(1, ...items.map(key));
-  return items.map((it, i) => `<div class="row${led && led(it) ? ' ok' : ''}" data-k="${esc(label(it))}">
+  const act = it => { if (!pick) return ''; const [k, v] = pick(it);
+    return ` click${filter[k] === v ? ' sel' : ''}" data-act="filter" data-key="${k}" data-val="${esc(v)}" title="${filter[k] === v ? 'Click to drop the filter' : `Filter by this ${k}`}`; };
+  return items.map((it, i) => `<div class="row${led && led(it) ? ' ok' : ''}${act(it)}" data-k="${esc(label(it))}">
     <div class="led" style="${led ? '' : `background:${color ? color(it) : 'var(--yellow-dim)'}`}"></div>
     <div class="name"><div class="n">${label(it)}</div>${sub ? `<div class="h">${sub(it)}</div>` : ''}</div>
     <div class="bar"><i style="width:${(key(it) / max * 100).toFixed(1)}%;${color ? `background:${color(it)}` : ''}"></i></div>
     <div class="num">${val(it)}${valSub ? `<small>${valSub(it)}</small>` : ''}</div></div>`).join('');
 }
 
-function render(d) {
-  const k = d.kpi;
+function render(d, quiet = false) {
+  lastData = d;
+  const v = filtering(d) ? filtered(d, filter) : d, k = v.kpi;
+  filterBar(d, v);
   $('origin').innerHTML = `${SNAPSHOT ? '<b>static snapshot</b>' : '<span class="live on">live</span>'} · source <b>${esc(d.source)}</b> · ${d.files} transcripts · since <b>${k.firstSeen.slice(0, 10)}</b> · updated <b>${new Date(d.generatedAt).toLocaleTimeString()}</b>`;
   const p = $('prog'); p.classList.remove('tick'); void p.offsetWidth; p.classList.add('tick');
-  countTo($('sActive'), k.activeNow); countTo($('sToday'), k.today.prompts || 0);
+  countTo($('sActive'), d.kpi.activeNow); countTo($('sToday'), k.today.prompts || 0);
   countTo($('sSessions'), k.sessions); countTo($('sTools'), k.toolCalls, fmt);
   countTo($('sOut'), k.outputTokens, fmt); countTo($('sCache'), k.cacheHit * 100, v => v.toFixed(1));
 
+  $('prov').classList.toggle('dim', !!filter.model);
   $('prov').innerHTML = '<span class="lbl">Models</span>' + d.models.map(m =>
-    `<div class="pv"><span class="led" style="background:${modelColor(m.model)};box-shadow:0 0 8px ${modelColor(m.model)}"></span>
+    `<div class="pv${filter.model === m.model ? ' sel' : ''}"${d.facets ? ` data-act="filter" data-key="model" data-val="${esc(m.model)}" title="Filter by this model"` : ''}><span class="led" style="background:${modelColor(m.model)};box-shadow:0 0 8px ${modelColor(m.model)}"></span>
      <div><div class="n">${esc(shortModel(m.model))}</div><div class="t">${fmt(m.turns, 1)} turns · ${fmt(m.output_tokens)} out</div></div></div>`).join('');
 
-  const t = d.tokens, tsum = Object.values(t).reduce((a, b) => a + b, 0) || 1;
+  const t = v.tokens, tall = Object.values(t).reduce((a, b) => a + b, 0) || 1;
   const TK = [['cache_read_input_tokens', 'cache read', 'var(--ok)'], ['cache_creation_input_tokens', 'cache write', 'var(--blue)'],
               ['input_tokens', 'input (uncached)', 'var(--violet)'], ['output_tokens', 'output', 'var(--yellow)']];
-  const hmax = Math.max(1, ...d.hours);
+  const hmax = Math.max(1, ...v.hours);
   const today = k.today;
 
   if (window.GAME) GAME.update(d);
@@ -453,34 +587,36 @@ function render(d) {
       : '<div class="empty">No open sessions in the last hour.</div>', 'wide att' + (need ? ' hot' : '')),
     insightsCard(d.insights, d.insightsRun),
     securityCard(d.security, d.securityRun),
-    card('Activity', `last ${d.daily.length} days`, activityChart(d.daily), 'wide'),
+    card('Activity', `last ${Math.min(range, v.daily.length)} days`, activityChart(v.daily), 'wide'),
     card('Token mix', fmt(k.totalTokens) + ' total',
-      `<div class="split">${TK.map(([key, , c]) => `<i style="flex-grow:${(t[key] || 0) / tsum};background:${c}"></i>`).join('')}</div>
-       <div class="kv">${TK.map(([key, l, c]) => `<span><i style="background:${c}"></i>${l}</span><span>${fmt(t[key] || 0)} · ${((t[key] || 0) / tsum * 100).toFixed(1)}%</span>`).join('')}
+      `<div class="split">${TK.map(([key, , c]) => `<i style="flex-grow:${(t[key] || 0) / tall};background:${c}"></i>`).join('')}</div>
+       <div class="kv">${TK.map(([key, l, c]) => `<span><i style="background:${c}"></i>${l}</span><span>${fmt(t[key] || 0)} · ${((t[key] || 0) / tall * 100).toFixed(1)}%</span>`).join('')}
        <span>turns (API calls)</span><span>${fmt(k.turns)}</span><span>subagent runs</span><span>${fmt(k.subagents)}</span>
        <span>tool errors</span><span class="${k.toolErrors ? 'err' : ''}">${fmt(k.toolErrors)} · ${(k.toolErrors / Math.max(1, k.toolCalls) * 100).toFixed(1)}%</span>
        <span>today</span><span>${fmt(today.output_tokens || 0)} out · ${today.tools || 0} tools · ${today.sessions || 0} sessions</span></div>`),
-    card('Models', `${d.models.length}`, barRows(d.models, {
-      key: m => m.output_tokens, label: m => esc(shortModel(m.model)), color: m => modelColor(m.model),
+    card('Models', `${v.models.length}`, barRows(v.models, {
+      key: m => m.output_tokens, label: m => esc(shortModel(m.model)), color: m => modelColor(m.model), pick: d.facets && (m => ['model', m.model]),
       sub: m => `${fmt(m.cache_read_input_tokens + m.cache_creation_input_tokens + m.input_tokens)} in · ${fmt(m.turns)} turns`,
       val: m => fmt(m.output_tokens), valSub: () => 'output' })),
-    card('Tools', `${fmt(k.toolCalls)} calls`, barRows(d.tools.map(([name, n]) => ({ name, n })), {
-      key: x => x.n, label: x => esc(x.name), val: x => fmt(x.n), valSub: x => (x.n / k.toolCalls * 100).toFixed(1) + '%' })),
+    (() => { const L = limited('tools', v.tools.map(([name, n]) => ({ name, n })));
+      return card('Tools', `${fmt(k.toolCalls)} calls · ${v.tools.length} tools`, barRows(L.items, {
+        key: x => x.n, label: x => esc(x.name), val: x => fmt(x.n), valSub: x => (x.n / Math.max(1, k.toolCalls) * 100).toFixed(1) + '%' }) + L.foot); })(),
     card('Time of day', 'prompts per hour',
-      `<div class="hours">${d.hours.map((v, h) => `<div data-tip="${h}:00–${h + 1}:00\n${v} prompts" style="opacity:${v ? .15 + .85 * v / hmax : .06}"></div>`).join('')}</div>
-       <div class="hours-ax">${d.hours.map((_, h) => `<span>${h % 3 ? '' : h}</span>`).join('')}</div>`),
-    card('Projects', `top ${d.projects.length}`, barRows(d.projects, {
-      key: p => p.tokens, label: p => esc(p.path.split('/').pop() || p.path),
+      `<div class="hours">${v.hours.map((v, h) => `<div data-tip="${h}:00–${h + 1}:00\n${v} prompts" style="opacity:${v ? .15 + .85 * v / hmax : .06}"></div>`).join('')}</div>
+       <div class="hours-ax">${v.hours.map((_, h) => `<span>${h % 3 ? '' : h}</span>`).join('')}</div>`),
+    (() => { const L = limited('projects', v.projects);
+      return card('Projects', `${v.projects.length} repos`, barRows(L.items, {
+      key: p => p.tokens, label: p => esc(p.path.split('/').pop() || p.path), pick: d.facets && (p => ['repo', p.path]),
       sub: p => `<span class="p">${esc(p.path)}</span> · ${p.sessions || 0} sessions · ${p.prompts} prompts`,
-      val: p => fmt(p.tokens), valSub: p => fmt(p.output_tokens) + ' out' })),
-    card('Recent sessions', `${d.sessions.filter(s => s.active).length} active`, d.sessions.map(s => `
+      val: p => fmt(p.tokens), valSub: p => fmt(p.output_tokens) + ' out' }) + L.foot); })(),
+    card('Recent sessions', `${v.sessions.filter(s => s.active).length} active`, v.sessions.length ? v.sessions.map(s => `
       <div class="row srow${s.active ? ' ok' : ''}" data-k="${s.id}" data-tip="${esc(`${s.id}\n${s.project}${s.branch ? ' @ ' + s.branch : ''}\n${s.start.replace('T', ' ')} → ${s.end.slice(11)}\nClaude Code ${s.version || '?'}`)}">
         <div class="led"></div>
         <div class="name"><div class="n">${s.models.map(m => `<span class="chip" style="background:${modelColor(m)}">${esc(shortModel(m))}</span>`).join('')}${esc(s.title || '(untitled)')}</div>
           <div class="h"><span class="p">${esc(s.project)}</span> · ${since(s.end, 'ago')} · ${s.minutes} min</div></div>
         <div class="num opt">${s.prompts}<small>prompts</small></div>
         <div class="num opt">${s.tools}<small>tools</small></div>
-        <div class="num">${fmt(s.outputTokens)}<small>${fmt(s.tokens)} total</small></div></div>`).join(''), 'wide'),
+        <div class="num">${fmt(s.outputTokens)}<small>${fmt(s.tokens)} total</small></div></div>`).join('') : '<div class="empty">No sessions match the filter.</div>', 'wide'),
   ].filter(Boolean); // the Security card is left out of exported snapshots
 
   // Only swap the cards whose HTML changed: no flicker, scroll position and hover stay
@@ -501,7 +637,7 @@ function render(d) {
   // Flash rows whose numbers changed since the last update (live timers excluded)
   changed.forEach(c => c.querySelectorAll('.row[data-k]').forEach(r => {
     const t = r.textContent.replace(/\d+(:\d+)?\s?(s|min|h|d)( ago)?|just now/g, '');
-    if (built && r.dataset.k in prevSig && prevSig[r.dataset.k] !== t) r.classList.add('flash');
+    if (built && !quiet && r.dataset.k in prevSig && prevSig[r.dataset.k] !== t) r.classList.add('flash');
     prevSig[r.dataset.k] = t;
   }));
   main.classList.add('built');

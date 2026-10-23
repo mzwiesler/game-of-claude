@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import ledger
-from collect import CLAUDE_DIR, PROJECTS_DIR, _ts
+from collect import CLAUDE_DIR, PROJECTS_DIR, _ts, repo_root as _repo_root
 
 HERE = Path(__file__).resolve().parent
 DIR = ledger.PATH.parent / "insights"
@@ -90,10 +90,6 @@ def _cmd_key(cmd: str) -> str:
     if w[0] in ("git", "gh", "az", "terraform", "kubectl", "docker", "podman", "npm", "uv", "python3", "databricks") and len(w) > 1:
         return f"{w[0]} {w[1]}"
     return w[0]
-
-
-def _repo_root(cwd: str) -> str:
-    return cwd.split("/.claude/worktrees/")[0]
 
 
 # ---------- reading ----------

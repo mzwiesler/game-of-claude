@@ -74,6 +74,20 @@ class CollectTest(unittest.TestCase):
         self.assertEqual(status(s, T0 + timedelta(seconds=5)), "working")
         self.assertEqual(status(s, T0 + timedelta(seconds=60)), "approval")
 
+    def test_worktrees_group_by_repo_and_facets(self):
+        wt = TRANSCRIPT.replace('"cwd": "/repo"', '"cwd": "/repo/.claude/worktrees/x"').replace(
+            '"id": "m3", "model": "claude-opus-5-5"', '"id": "m3", "model": "claude-haiku-5-5"')
+        self.path.write_text(TRANSCRIPT)
+        (self.dir / "s2.jsonl").write_text(wt)
+        snap = Collector(self.dir, ledger=None).snapshot()
+        self.assertEqual([(p["path"], p["sessions"]) for p in snap["projects"]], [("/repo", 2)])
+        f = {x["id"]: x for x in snap["facets"]}
+        self.assertEqual((f["s2"]["repo"], f["s2"]["project"]), ("/repo", "/repo/.claude/worktrees/x"))
+        self.assertNotIn("modelDays", f["s1"])  # one model: days says it all
+        day = T0.strftime("%Y-%m-%d")
+        self.assertEqual(f["s2"]["modelDays"][day]["claude-haiku-5-5"]["output_tokens"], 20)
+        self.assertEqual(f["s2"]["models"]["claude-opus-5-5"]["turns"], 2)
+
     def test_rewritten_file_is_reparsed(self):
         c = Collector(self.dir, ledger=None)
         self.path.write_text(TRANSCRIPT)

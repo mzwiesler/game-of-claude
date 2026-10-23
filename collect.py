@@ -35,6 +35,11 @@ def _ts(s: str | None) -> datetime | None:
         return None
 
 
+def repo_root(cwd: str) -> str:
+    """The main checkout for a worktree session (…/repo/.claude/worktrees/x → …/repo)."""
+    return cwd.split("/.claude/worktrees/")[0]
+
+
 def _is_prompt(rec: dict) -> bool:
     """A real user prompt: text typed by the user, not a tool result or injected meta message."""
     if rec.get("isMeta") or rec.get("isSidechain"):
@@ -60,6 +65,7 @@ def new_session(path: Path, since: datetime | None = None) -> dict:
         "title": None, "cwd": None, "branch": None, "version": None, "start": None, "end": None,
         "prompts": 0, "turns": 0, "tokens": Counter(), "models": defaultdict(Counter), "tools": Counter(),
         "hours": Counter(), "days": defaultdict(Counter), "errors": 0,
+        "modelDays": defaultdict(lambda: defaultdict(Counter)),  # day → model → tokens/turns, for the model filter
         "last": None, "lastPrompt": None, "lastTool": None,  # last main-chain record, for the attention status
         "g": new_game_view(), "_since": since,  # game counters (game.py), since=None counts everything
         "_offset": 0, "_ino": None, "_seenMsgs": set(), "_seenTools": set(), "_toolNames": {}, "_failed": set(),
@@ -213,9 +219,10 @@ def _record(s: dict, rec: dict) -> None:
         s["models"][model][k] += v
     s["models"][model]["turns"] += 1
     if day:
-        s["days"][day]["turns"] += 1
-        s["days"][day]["output_tokens"] += usage.get("output_tokens") or 0
-        s["days"][day]["tokens"] += sum(usage.get(k) or 0 for k in TOKEN_KEYS)
+        for c in (s["days"][day], s["modelDays"][day][model]):
+            c["turns"] += 1
+            c["output_tokens"] += usage.get("output_tokens") or 0
+            c["tokens"] += sum(usage.get(k) or 0 for k in TOKEN_KEYS)
     if g:
         for k in TOKEN_KEYS:
             g["tokens"][k] += usage.get(k) or 0
@@ -249,6 +256,23 @@ def status(s: dict, now: datetime) -> str:
         if last["stop"] in ("end_turn", "stop_sequence", "max_tokens", "refusal", None):
             return "waiting"
     return "working"
+
+
+def facet(s: dict, short) -> dict:
+    """One session's counters for the dashboard's repo and model filters, which re-aggregate
+    them in the browser. modelDays only when the session used more than one model (otherwise
+    it equals days)."""
+    f = {
+        "id": s["sessionId"], "sub": s["subagent"], "repo": short(repo_root(s["cwd"] or "")), "project": short(s["cwd"]),
+        "title": s["title"], "branch": s["branch"], "version": s["version"],
+        "start": s["start"].isoformat(timespec="seconds"), "end": s["end"].isoformat(timespec="seconds"),
+        "prompts": s["prompts"], "turns": s["turns"], "errors": s["errors"], "tokens": dict(s["tokens"]),
+        "models": {m: dict(c) for m, c in s["models"].items()}, "tools": dict(s["tools"]),
+        "hours": dict(s["hours"]), "days": {d: dict(c) for d, c in s["days"].items()},
+    }
+    if len(s["models"]) > 1:
+        f["modelDays"] = {d: {m: dict(c) for m, c in ms.items()} for d, ms in s["modelDays"].items()}
+    return f
 
 
 class Collector:
@@ -368,14 +392,16 @@ class Collector:
                 models[m].update(c)
             for d, c in s["days"].items():
                 daily[d].update(c)
-            proj = s["cwd"] or "?"
+            if not s["start"]:  # no records yet
+                continue
+            proj = repo_root(s["cwd"] or "?")
             projects[proj]["tokens"] += sum(s["tokens"].values())
             projects[proj]["output_tokens"] += s["tokens"]["output_tokens"]
             projects[proj]["prompts"] += s["prompts"]
             projects[proj]["tools"] += sum(s["tools"].values())
         for s in main:
             daily[s["start"].strftime("%Y-%m-%d")]["sessions"] += 1
-            projects[s["cwd"] or "?"]["sessions"] += 1
+            projects[repo_root(s["cwd"] or "?")]["sessions"] += 1
 
         day_keys = sorted(daily)[-days:]
         active = [s for s in main if s["end"] and (now - s["end"]).total_seconds() < 600]
@@ -413,9 +439,9 @@ class Collector:
             "tokens": dict(tokens),
             "daily": [{"date": d, **daily[d]} for d in day_keys],
             "models": sorted(({"model": m, **c} for m, c in models.items()), key=lambda r: -r["output_tokens"]),
-            "tools": tools.most_common(18),
+            "tools": tools.most_common(),
             "hours": [hours.get(h, 0) for h in range(24)],
-            "projects": sorted(({"path": short(p), **c} for p, c in projects.items()), key=lambda r: -r["tokens"])[:12],
+            "projects": sorted(({"path": short(p), **c} for p, c in projects.items()), key=lambda r: -r["tokens"]),
             "sessions": [{
                 "id": s["sessionId"], "title": s["title"], "project": short(s["cwd"]), "branch": s["branch"],
                 "version": s["version"], "start": s["start"].isoformat(timespec="seconds"),
@@ -433,6 +459,7 @@ class Collector:
                 "idleSec": int((now - s["end"]).total_seconds()),
                 "models": sorted(s["models"], key=lambda m: -s["models"][m]["output_tokens"]),
             } for s in attention],
+            "facets": [facet(s, short) for s in sess if s["start"]],
         }
 
 
