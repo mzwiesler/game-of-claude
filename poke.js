@@ -75,8 +75,8 @@
   };
   const catchRate = id => tier(id).c * [1, .6, .35][stage(id)];
   const yieldExp = id => LEGEND.has(id) ? 270 : RARE.has(id) ? 160 : [64, 142, 220][stage(id)];
-  // battles end every ~10 s while Claude works, so EXP is 1/25 of the games' formula: first evolution (Lv 16) after ~3 h of work
-  const winExp = (id, L) => Math.max(1, Math.round(yieldExp(id) * L / 7 / 25));
+  // battles end every ~10 s while Claude works, so EXP is 3/25 of the games' formula: first evolution (Lv 16) after ~1 h of work
+  const winExp = (id, L) => Math.max(1, Math.round(yieldExp(id) * L / 7 * 3 / 25));
   // super effective (a hits these harder); RESIST and the reverse of SUPER count as not very effective
   const SUPER = { f: 'g b i', w: 'f r gr', g: 'w r gr', e: 'w fl', i: 'g fl gr d', fi: 'n r i', p: 'g b', gr: 'f e r p', fl: 'g fi b',
     ps: 'fi p', b: 'g ps p', r: 'f i fl b', gh: 'gh ps', d: 'd' };
@@ -567,7 +567,7 @@
       const gain = g.xp - S.xp;
       float(100, 66, `+${gain} XP`, 'xp');
       attack(gain);
-      gainExp(gain);   // real XP counts 1:1
+      gainExp(gain * 3);   // real XP counts 3:1
       if (gain >= 50) S.rare = Date.now();   // a big deed draws out a rare one
     }
     const seen = +store.get('pokeTrainerLevel') || 0;

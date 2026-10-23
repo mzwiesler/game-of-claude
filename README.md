@@ -174,9 +174,9 @@ In the **Pokémon** theme your real XP level is the *trainer* level, and the are
   fire/fighting/rock/ground, edits: grass/normal/bug, reading: psychic/water/ice, web:
   flying/electric, agents: ghost/poison, MCP: electric/rock). Type matchups apply, and real XP gains
   land as "Claude power" hits.
-- **Level up and evolve**: wins and catches give your partner EXP (Lv³ curve, 1/25 of the games'
-  battle EXP since a battle ends every few seconds: the first evolution at Lv 16 takes about three
-  hours of Claude work); real XP counts 1:1. It evolves at its level; stone evolutions happen at Lv 30, trade evolutions at Lv 36, and Eevee picks Vaporeon,
+- **Level up and evolve**: wins and catches give your partner EXP (Lv³ curve, 3/25 of the games'
+  battle EXP since a battle ends every few seconds: the first evolution at Lv 16 takes about an
+  hour of Claude work); real XP counts 3:1. It evolves at its level; stone evolutions happen at Lv 30, trade evolutions at Lv 36, and Eevee picks Vaporeon,
   Jolteon or Flareon at random. Partners can't grow past the level cap, 15 + 5 × trainer level.
 - **Catch**: a weakened wild Pokémon that isn't in your Pokédex yet gets up to three balls (Poké Ball,
   Great Ball from trainer LV 5, Ultra Ball from LV 12). Rarer and evolved Pokémon break free more often.
