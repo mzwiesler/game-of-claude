@@ -21,8 +21,11 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import hmac
 import json
+import os
 import re
+import secrets
 import sys
 import time
 from collections import Counter, defaultdict
@@ -35,6 +38,7 @@ from collect import CLAUDE_DIR, PROJECTS_DIR, _ts
 from insights import _cmd_key, _repo_root, _text, read_settings, top
 
 DIR = ledger.PATH.parent / "security"
+KEY_PATH = DIR / ".key"  # per-install HMAC key for fingerprints (mode 600, made on first use)
 KEEP = 60  # dated reports kept
 DAYS = 7  # default look-back window
 MANAGED = Path("/etc/claude-code/managed-settings.json")
@@ -66,7 +70,10 @@ SECRETS = (
     ("Azure storage key", "high", r"AccountKey=(?P<v>[A-Za-z0-9+/]{40,}={0,2})"),
     ("Azure SAS signature", "high", r"[?&]sig=(?P<v>[A-Za-z0-9%+/]{30,}(?:%3D|=){0,2})"),
     ("Connection string password", "high", r"(?i)(?:^|[;\s\"'])(?:password|pwd)=(?P<v>[^;\s\"'<>{}$]{6,})"),
-    ("Private key", "high", r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----\s*(?P<v>[A-Za-z0-9+/=\s\\n]{64,})"),
+    ("Private key", "high", r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?-----\s*(?:[\w-]+: [^\n]*\n\s*)*(?P<v>[A-Za-z0-9+/=\s\\n]{64,})"),
+    ("Password in a URL", "high", r"\b[a-z][a-z0-9+.-]{1,20}://[^/\s:@'\"]+:(?P<v>[^@\s/'\"]{4,})@[\w.-]+"),
+    ("GitLab token", "high", r"\bglpat-[A-Za-z0-9_-]{20,}"),
+    ("Azure DevOps PAT", "high", r"\b[A-Za-z0-9]{76}AZDO[A-Za-z0-9]{4}\b"),
     ("JWT", "high", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}"),
     ("Slack token", "high", r"\bxox[bpas]-[A-Za-z0-9-]{20,}"),
     ("Atlassian API token", "high", r"\bATATT[A-Za-z0-9_=-]{30,}"),
@@ -74,15 +81,38 @@ SECRETS = (
     ("Terraform Cloud token", "high", r"\b[A-Za-z0-9]{14}\.atlasv1\.[A-Za-z0-9_-]{60,}"),
     # lower confidence: a key word with something password-like after it
     ("Possible password / token", "medium",
-     r"(?i)\b(?:password|passwd|secret|token|api[_-]?key|client[_-]?secret)[\"']?\s*[:=]\s*[\"']?(?P<v>[^\s\"'`,;(){}\[\]<>]{8,})"),
+     r"(?i)(?<![A-Za-z0-9])[A-Za-z0-9_]{0,40}?(?:password|passwd|secret|token|api[_-]?key)[A-Za-z0-9_]{0,20}[\"']?\s*[:=]\s*[\"']?"
+     r"(?P<v>[^\s\"'`,;(){}\[\]<>]{8,})"),
 )
 SECRET_RE = [(k, sev, re.compile(p)) for k, sev, p in SECRETS]
+PLACEHOLDER_WHOLE = re.compile(r"(.)\1{7,}|<[^>]*>|\$\{|^\$\w+$|changeme|example|placeholder|dummy|redacted|your[_-]|"
+                               r"\.\.\.|…|^(?:pass(?:word)?|secret|pwd|token|x+|\*+)$", re.I)
 PLACEHOLDER = re.compile(r"x{3,}|\*{3,}|<[^>]*>|\$\{|^\$|changeme|example|placeholder|dummy|redacted|your[_-]|fake|sample|\.\.\.|…", re.I)
 IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b")
 CARD = re.compile(r"(?<![\d.-])(?:4\d{3}|5[1-5]\d\d|2[2-7]\d\d|3[47]\d\d)(?:[ -]?\d{4}){2}[ -]?\d{3,4}(?![\d.-])")
+IBAN_LEN = dict(AD=24, AE=23, AL=28, AT=20, AZ=28, BA=20, BE=16, BG=22, BH=22, BR=29, BY=28, CH=21, CR=22, CY=28, CZ=24,
+                DE=22, DK=18, DO=28, EE=20, EG=29, ES=24, FI=18, FO=18, FR=27, GB=22, GE=22, GI=23, GL=18, GR=27, GT=28,
+                HR=21, HU=28, IE=22, IL=23, IQ=23, IS=26, IT=27, JO=30, KW=30, KZ=20, LB=28, LC=32, LI=21, LT=20, LU=20,
+                LV=21, MC=27, MD=24, ME=22, MK=19, MR=27, MT=31, MU=30, NL=18, NO=15, PK=24, PL=28, PS=29, PT=25, QA=29,
+                RO=24, RS=22, SA=24, SC=31, SE=24, SI=19, SK=24, SM=27, ST=25, SV=28, TL=23, TN=24, TR=26, UA=29, VA=22,
+                VG=24, XK=20)
 EXAMPLE_IBANS = {"DE89370400440532013000", "GB82WEST12345698765432", "GB29NWBK60161331926819"}  # the documentation examples
 TEST_CARDS = {"4111111111111111", "4242424242424242", "5555555555554444", "5105105105105100", "4012888888881881",
               "378282246310005", "371449635398431", "4000056655665556", "2223003122003222"}
+
+# Credentials in commands that no secret pattern knows: (name part kept, value hidden)
+NV = r"(?!\[)([^\s'\"&;|,}]+)"  # a value, unless it is already a mask
+HIDE = [re.compile(p, re.I) for p in (
+    r"(\b[a-z][\w+.-]*://[^/\s:@'\"]+:)(?!\[)([^@\s/'\"]+)(?=@)",  # URL userinfo
+    r"(\bauthorization\s*[:=]\s*(?:bearer|basic|token|bot|digest)?\s*)" + NV,
+    r"(\b(?:bearer|basic)\s+)(?!\[)([A-Za-z0-9._~+/=-]{6,})",
+    r"((?:^|\s)(?:-u|--user)(?:\s+|=)['\"]?[^\s:'\"]+:)" + NV,  # curl -u user:pw
+    r"(\b(?:mysql\w*|mariadb\w*)\b[^|;&\n]*?\s-p)" + NV,  # mysql -pS3cret
+    r"(--pass(?:word)?(?:\s+|=)['\"]?)" + NV,
+    r"(\bsshpass\s+-p\s*['\"]?)" + NV,
+    r"(\b\w*(?:password|passwd|pwd|token|secret|key)\w*\s*=\s*['\"]?)" + NV,  # DB_PASSWORD=…, --api-key=…
+    r"(\"\w*(?:password|passwd|token|secret|key)\w*\"\s*:\s*\")([^\"]+)",  # {"dbPassword": "…"}
+)]
 
 # Credential stores Claude should never see: (label, path pattern)
 CRED = re.compile(r"""(?x)(?:^|[\s"'=:(])(?P<p>
@@ -162,20 +192,55 @@ INJECT_WINDOW = 10  # tool calls after untrusted content in which an outward act
 RERUN_WINDOW = 5  # tool calls after a sandbox block in which an unsandboxed re-run counts (check 5)
 
 
+_keys: dict[Path, bytes] = {}
+
+
+def _key() -> bytes:
+    """Random per-install key (KEY_PATH, mode 600, made on first use): fingerprints of short secrets
+    and card numbers cannot be brute-forced from the report, the acks or the page. If it cannot be
+    written, a per-process key (fingerprints then change between runs, acks do not stick)."""
+    p = KEY_PATH
+    if p not in _keys:
+        try:
+            _keys[p] = p.read_bytes()
+        except OSError:
+            k = secrets.token_bytes(32)
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                with os.fdopen(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
+                    f.write(k)
+            except FileExistsError:
+                k = p.read_bytes()
+            except OSError:
+                pass
+            _keys[p] = k
+    return _keys[p]
+
+
 def _h(v: str) -> str:
-    return hashlib.sha256(v.encode()).hexdigest()[:12]
+    return hmac.new(_key(), v.encode(), hashlib.sha256).hexdigest()[:12]
 
 
-def mask(v: str) -> str:
-    """First 4 and last 2 characters plus length: enough to recognise, useless to anyone else."""
+def mask(v: str, kind: str = "") -> str:
+    """First 4 and last 2 characters plus length for long secrets; length only for short ones and
+    IBANs, last 2 digits for card numbers: enough to recognise, useless to anyone else."""
     v = v.strip()
-    return f"{v[:4]}…{v[-2:]} ({len(v)} chars)" if len(v) >= 10 else f"… ({len(v)} chars)"
+    if kind == "Card number":
+        return f"…{v[-2:]} ({len(v)} digits)"
+    if kind == "IBAN" or len(v) < 20:
+        return f"({len(v)} chars)"
+    return f"{v[:4]}…{v[-2:]} ({len(v)} chars)"
 
 
 def _plausible(kind: str, v: str) -> bool:
-    if PLACEHOLDER.search(v) or len(set(v)) < 6:
+    if len(set(v)) < 6:
         return False
-    if kind == "Possible password / token":
+    if kind != "Possible password / token":
+        if PLACEHOLDER_WHOLE.search(v):
+            return False
+    elif PLACEHOLDER.search(v):
+        return False
+    else:
         classes = sum(bool(re.search(p, v)) for p in (r"[a-z]", r"[A-Z]", r"\d", r"[^A-Za-z0-9]"))
         # identifiers, paths, URLs and code (`token=self.get()`) are not passwords
         if re.search(r"(?:password|passwd|secret|token|key)s?$", v, re.I):
@@ -184,19 +249,24 @@ def _plausible(kind: str, v: str) -> bool:
             return False
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", v) and not re.search(r"\d.*[A-Za-z]|[A-Za-z].*\d", v):
             return False
+    if kind == "Password in a URL" and re.search(r"^\$|^\{|^%", v):
+        return False
     if kind in ("OpenAI-style key", "Atlassian API token", "Slack token") and not re.search(r"\d", v):
         return False
     return True
 
 
 def secrets_in(text: str):
-    """(kind, severity, value) for each plausible secret in the text."""
+    """(kind, severity, value) for each plausible secret in the text; a value two patterns match
+    (or one inside another) counts once, under the more specific pattern (listed first)."""
+    seen = []
     for kind, sev, rx in SECRET_RE:
         for m in rx.finditer(text):
             v = m.group("v") if "v" in rx.groupindex else m.group(0)
             if kind == "Private key":
                 v = re.sub(r"\s|\\n", "", v)
-            if _plausible(kind, v):
+            if _plausible(kind, v) and not any(v in x or x in v for x in seen):
+                seen.append(v)
                 yield kind, sev, v
 
 
@@ -207,6 +277,8 @@ def redact(text: str) -> str:
         return m.group(0).replace(v, f"[{mask(v)}]")
     for _, _, rx in SECRET_RE:
         text = rx.sub(sub, text)
+    for rx in HIDE:  # passwords and tokens passed as arguments, headers, URL userinfo, VAR=…
+        text = rx.sub(lambda m: m.group(1) + "[hidden]", text)
     return text
 
 
@@ -220,7 +292,7 @@ def _luhn(d: str) -> bool:
 
 def _iban_ok(v: str) -> bool:
     v = v.replace(" ", "")
-    if not 15 <= len(v) <= 34:
+    if IBAN_LEN.get(v[:2]) != len(v):
         return False
     n = "".join(str(int(c, 36)) for c in v[4:] + v[:4])
     return int(n) % 97 == 1
@@ -253,9 +325,9 @@ def _cred_path(p: str) -> bool:
 
 
 def cred_reads(c: dict) -> set[str]:
-    """Credential stores a call read: Read/Grep paths, and files a Bash command printed (cat, grep,
+    """Credential stores a call read: Read/Grep/Glob paths (Glob only lists names), and files a Bash command printed (cat, grep,
     head …; `source .env`, `--env-file`, `ls ~/.ssh` do not put the content into the context)."""
-    if c["name"] in ("Read", "Grep", "NotebookRead"):
+    if c["name"] in ("Read", "Grep", "Glob", "NotebookRead"):
         return {m.group("p") for p in c.get("paths") or [] for m in CRED.finditer(" " + p) if _cred_path(m.group("p"))}
     if c["name"] != "Bash":
         return set()
@@ -268,6 +340,16 @@ def cred_reads(c: dict) -> set[str]:
             if READERS.match(seg):
                 found |= {m.group("p") for m in CRED.finditer(" " + seg) if _cred_path(m.group("p"))}
     return found
+
+
+def _excluded(cmd: str, patterns) -> bool:
+    """A command matching a `sandbox.excludedCommands` entry (`powershell.exe *` → `powershell.exe` as a word)."""
+    cmd = cmd.strip()
+    for e in patterns:
+        pre = str(e or "").strip().rstrip(" *")
+        if pre and re.match(re.escape(pre) + r"(?:\s|$)", cmd):
+            return True
+    return False
 
 
 def _host(url: str) -> str:
@@ -308,7 +390,7 @@ def scan(root: Path, since: datetime) -> list[dict]:
         s = {"id": path.stem, "sid": None, "subagent": "subagents" in path.parts, "cwd": None, "start": None, "end": None,
              "modes": Counter(), "prompts": 0, "calls": [], "hits": [], "_calls": {}}
         for line in lines:
-            if b'"type":"api-request' in line or b'"type":"attachment"' in line:
+            if b'"type":"api-request' in line or b'"type":"attachment"' in line and not any(t in line for t in ATTACH_B):
                 continue  # request copies and injected context (system prompt, tool docs): never evidence
             try:
                 rec = json.loads(line)
@@ -325,19 +407,31 @@ def scan(root: Path, since: datetime) -> list[dict]:
     return out
 
 
+# Attachments that carry content the user (or a hook) put into the context: type → (channel, field)
+ATTACH = {"queued_command": ("prompt", "prompt"), "file": ("attached file", "content"),
+          "edited_text_file": ("attached file", "snippet"), "hook_additional_context": ("hook context", "content")}
+ATTACH_B = tuple(f'"type":"{t}"'.encode() for t in ATTACH)
+
+
 def _hits(s: dict, text: str, channel: str, at: datetime | None) -> None:
     if not text or len(text) < 8:
         return
     for kind, sev, v in secrets_in(text):
-        s["hits"].append({"type": "secret", "kind": kind, "severity": sev, "h": _h(v), "masked": mask(v), "channel": channel, "at": at})
+        s["hits"].append({"type": "secret", "kind": kind, "severity": sev, "h": _h(v), "masked": mask(v, kind), "channel": channel, "at": at})
     for kind, v in pii_in(text):
-        s["hits"].append({"type": "pii", "kind": kind, "severity": "medium", "h": _h(v), "masked": mask(v), "channel": channel, "at": at})
+        s["hits"].append({"type": "pii", "kind": kind, "severity": "medium", "h": _h(v), "masked": mask(v, kind), "channel": channel, "at": at})
 
 
 def _record(s: dict, rec: dict, ts: datetime | None) -> None:
     typ = rec.get("type")
     if rec.get("permissionMode") and typ in ("user", "permission-mode"):
         s["modes"][rec["permissionMode"]] += 1
+    if typ == "attachment":  # only the content-carrying kinds (ATTACH); sandbox/skill/tool docs are skipped
+        a = rec.get("attachment") or {}
+        channel, field = ATTACH.get(a.get("type"), (None, None))
+        if channel:
+            _hits(s, "\n".join(_strings(a.get(field), [])), channel, ts)
+        return
     if typ not in ("user", "assistant") or rec.get("isCompactSummary"):
         return
     if ts:
@@ -381,6 +475,9 @@ def _record(s: dict, rec: dict, ts: datetime | None) -> None:
                 s["prompts"] += not rec.get("isSidechain") and not text.startswith("<")
                 _hits(s, text, "subagent prompt" if rec.get("isSidechain") else "prompt", ts)
         return
+    if not rec.get("isMeta"):  # text typed alongside tool results (interjections), minus injected reminders
+        _hits(s, "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+                           and not b.get("text", "").lstrip().startswith("<system-reminder>")), "prompt", ts)
     for b in content:
         if not isinstance(b, dict) or b.get("type") != "tool_result":
             continue
@@ -530,9 +627,11 @@ def analyze(sessions: list[dict], settings: dict, days: int, now: datetime) -> d
         for p in cred_reads(c):
             cred[_short(p.replace("$HOME", "~"))].append((s, c))
     for p, hits in sorted(cred.items()):
-        ok = [(s, c) for s, c in hits if c["result"] and not (c["error"] or c["rejected"] or c["denied"])]
+        ok = [(s, c) for s, c in hits if c["result"] and not (c["error"] or c["rejected"] or c["denied"]) and c["name"] != "Glob"]
+        listed = not ok and all(c["name"] == "Glob" for _, c in hits)
         F.append(finding(f"cred:{p}", "leak", "high" if ok else "medium",
-                         f"Credential file read: {p}" if ok else f"Credential file access blocked: {p}",
+                         f"Credential file read: {redact(p)}" if ok else f"Credential location listed: {redact(p)}" if listed
+                         else f"Credential file access blocked: {redact(p)}",
                          f"{len(hits)}× ({len(ok)} succeeded) via {top(Counter(c['name'] for _, c in hits), 3)}"
                          + (f", e.g. `{redact(_shell(hits[0][1]['cmd']))[:140]}`" if hits[0][1]["name"] == "Bash" else ""),
                          "If it reached Claude, rotate what is in it. Deny it for good: `sandbox.filesystem.denyRead` / "
@@ -549,18 +648,19 @@ def analyze(sessions: list[dict], settings: dict, days: int, now: datetime) -> d
             if d:
                 (out_med if d.startswith(("/mnt/c/Users/", "/home/")) else out_low)[d].append((s, c))
     for d, hits in sorted(out_med.items()):
-        F.append(finding(f"outside:{d}", "leak", "medium", f"Read files in {d}", f"{len(hits)} reads, e.g. {_short(hits[0][1]['paths'][0])[:120]}",
+        F.append(finding(f"outside:{d}", "leak", "medium", f"Read files in {redact(d)}", f"{len(hits)} reads, e.g. {redact(_short(hits[0][1]['paths'][0]))[:120]}",
                          "Check these were meant to go to Claude; add the directory to `sandbox.filesystem.denyRead` if not.",
                          [_ref(s, c["at"]) for s, c in hits], "leaks"))
     if out_low:
         hits = [x for v in out_low.values() for x in v]
         F.append(finding("outside", "leak", "low", "Read files outside the session's project",
-                         top(Counter({d: len(v) for d, v in out_low.items()}), 6),
+                         redact(top(Counter({d: len(v) for d, v in out_low.items()}), 6)),
                          "Usually other repos you pointed it at; fine if intended.", [_ref(s, c["at"]) for s, c in hits], "leaks"))
 
     # ----- B. events -----
-    # sessions whose sandbox was off altogether (every Bash result says sandboxed: false)
-    off = [s for s in sessions if any(c.get("sandboxed") is False for c in s["calls"])
+    # sessions whose sandbox was off altogether (every Bash result says sandboxed: false, and not
+    # only because of excluded commands)
+    off = [s for s in sessions if any(c.get("sandboxed") is False and not _excluded(c["cmd"], excluded) for c in s["calls"] if c["name"] == "Bash")
            and not any(c.get("sandboxed") for c in s["calls"]) and not any(c.get("dds") for c in s["calls"])]
     off_ids = {id(s) for s in off}
     if off:
@@ -576,9 +676,10 @@ def analyze(sessions: list[dict], settings: dict, days: int, now: datetime) -> d
         for i, c in enumerate(s["calls"]):
             if c["name"] != "Bash":
                 continue
-            key = _cmd_key(c["cmd"])
-            ex = any(fnmatch.fnmatch(c["cmd"].strip(), e) or c["cmd"].strip().startswith(e.rstrip(" *")) for e in excluded)
-            unsb = c.get("dds") or ex or (c.get("sandboxed") is False and id(s) not in off_ids)
+            key = redact(_cmd_key(c["cmd"]))
+            ex = _excluded(c["cmd"], excluded)
+            ran = c["result"] and not c["rejected"]  # refused or never answered: nothing left the sandbox
+            unsb = ran and (c.get("dds") or ex or (c.get("sandboxed") is False and id(s) not in off_ids))
             if unsb:
                 c["rerun"] = i - last_block.get(key, -99) <= RERUN_WINDOW
                 c["excluded"] = ex
@@ -644,7 +745,7 @@ def analyze(sessions: list[dict], settings: dict, days: int, now: datetime) -> d
                             acts[srv][what] += 1
                             act_refs[srv].append(_ref(s, c["at"]))
                             labels.append(f"{srv} {what}")
-                if re.search(TF_APPLY, sh) and PROD_RE.search(sh) and not c["rejected"]:
+                if re.search(TF_APPLY, sh) and PROD_RE.search(sh) and c["result"] and not (c["error"] or c["rejected"]):
                     prod["terraform (Bash)"].append((s, c))
             elif c["name"].startswith("mcp__"):
                 parts = c["name"].split("__")
@@ -745,6 +846,15 @@ def _rule_cmd(rule: str) -> str | None:
     return "*" if inner in ("*", ":*", "") else inner
 
 
+def _rule_label(rule: str) -> str:
+    """A Bash rule by its command word only (`Bash(curl …)`): rules can carry arguments with credentials."""
+    c = _rule_cmd(rule)
+    if c is None or c == "*":
+        return redact(rule)
+    w = re.split(r"[\s:]", c, maxsplit=1)[0]
+    return f"Bash({w}{' …' if len(c) > len(w) else ''})"
+
+
 def posture(settings: dict, calls: list, passed: list) -> list[dict]:
     F = []
     sb_enabled = [(src, (d.get("sandbox") or {}).get("enabled")) for src, d in settings.items() if isinstance(d.get("sandbox"), dict)]
@@ -760,11 +870,15 @@ def posture(settings: dict, calls: list, passed: list) -> list[dict]:
                              f"`sandbox.allowUnsandboxedCommands: true` {where}; in auto mode the classifier decides alone",
                              "Set it to false once the sandbox allows what you need (or keep it and watch the escapes above).", group="posture"))
         for e in sb.get("excludedCommands") or []:
-            cmd = e.rstrip(" *")
-            in_allow = [a for a in allow if (_rule_cmd(a) or "").startswith(cmd) or _rule_cmd(a) == "*"]
-            F.append(finding(f"posture:excluded:{e}", "posture", "high" if in_allow else "medium", f"Excluded from the sandbox: {e}",
+            cmd = str(e or "").strip().rstrip(" *")
+            if not cmd:
+                continue
+            in_allow = [a for a in allow if _rule_cmd(a) == "*" or re.match(re.escape(cmd) + r"(?:[\s:*]|$)", _rule_cmd(a) or "")]
+            word = cmd.split()[0]
+            F.append(finding(f"posture:excluded:{src}:{_h(cmd)}", "posture", "high" if in_allow else "medium",
+                             f"Excluded from the sandbox: {word}{' …' if cmd != word else ''}",
                              f"`sandbox.excludedCommands` {where}: runs with no sandbox at all"
-                             + (f", and allowed without asking ({', '.join(in_allow)})" if in_allow else ""),
+                             + (f", and allowed without asking ({', '.join(map(_rule_label, in_allow))})" if in_allow else ""),
                              "Remove the exclusion if you can; otherwise keep it out of `permissions.allow` so each run asks.", group="posture"))
         net = (sb.get("network") or {}).get("allowedDomains") or []
         if "*" in net:
@@ -782,7 +896,7 @@ def posture(settings: dict, calls: list, passed: list) -> list[dict]:
             r"(?:python\d*(?:\.\d+)?|node|bash|sh|zsh|curl|wget|ssh|scp|powershell(?:\.exe)?|pwsh)(?:\s*(?::\*|\*|-|-c\s*:?\*?|-c\s.*\*))?", c))]
         if broad:
             F.append(finding(f"posture:broad-allow:{_h(src + ','.join(sorted(broad)))}", "posture", "medium", "Broad allow rules",
-                             f"{', '.join(broad)} {where}: these run anything without asking",
+                             f"{', '.join(map(_rule_label, broad))} {where}: these run anything without asking",
                              "Narrow them to the exact commands (e.g. `Bash(python3 -m pytest:*)`).", group="posture"))
         mcpw = [a for a in allow if a.startswith("mcp__") and next(
             (w for w in re.split(r"[_\-]", a.split("__")[-1].lower()) if w in WRITE_VERBS or w in READ_VERBS), None) in WRITE_VERBS]
@@ -790,6 +904,11 @@ def posture(settings: dict, calls: list, passed: list) -> list[dict]:
             F.append(finding(f"posture:mcp-write-allow:{_h(src + ','.join(sorted(mcpw)))}", "posture", "medium", "MCP write tools run without asking",
                              f"{', '.join(a.split('__')[-1] for a in mcpw)} {where}",
                              "Move them from `permissions.allow` to `ask` so each write in your name needs your OK.", group="posture"))
+        whole = sorted({a.split("__")[1] for a in allow if a.startswith("mcp__") and (a.count("__") == 1 or a.endswith("__*"))})
+        for srv in whole:
+            F.append(finding(f"posture:mcp-all-allow:{src}:{srv}", "posture", "medium", f"All tools of {srv} run without asking, writes included",
+                             f"`mcp__{srv}` allowed as a whole {where}",
+                             "Allow the read tools by name and leave the write tools to ask.", group="posture"))
         if perms.get("defaultMode") == "bypassPermissions" or d.get("skipDangerousModePermissionPrompt") is True:
             F.append(finding(f"posture:bypass:{src}", "posture", "high", "Permission bypass configured",
                              f"`defaultMode: bypassPermissions` or `skipDangerousModePermissionPrompt` {where}",
@@ -816,7 +935,7 @@ def posture(settings: dict, calls: list, passed: list) -> list[dict]:
     deny = [a for d in settings.values() for a in (d.get("permissions") or {}).get("deny") or [] if isinstance(a, str)]
     if any(re.fullmatch(r"(Edit|Write)\(~?/?.*\.claude/settings(\.local)?\.json\)", a) for a in deny):
         passed.append("Claude may not edit its own settings (deny rule)")
-    if not any(f["id"].startswith(("posture:broad-allow", "posture:mcp-write-allow")) for f in F):
+    if not any(f["id"].startswith(("posture:broad-allow", "posture:mcp-write-allow", "posture:mcp-all-allow")) for f in F):
         passed.append("No broad allow rules")
 
     # extensions: plugins by marketplace, MCP servers seen in tool calls
@@ -871,7 +990,7 @@ def ack(fp: str, report: dict | None, undo: bool = False, out_dir: Path = DIR) -
         acks[fp] = {"at": datetime.now().astimezone().isoformat(timespec="seconds"), "sessions": f.get("sessionIds", []),
                     "severity": f["severity"]}
     out_dir.mkdir(parents=True, exist_ok=True)
-    tmp = out_dir / "acks.tmp"
+    tmp = out_dir / f"acks.{os.getpid()}.tmp"
     tmp.write_text(json.dumps(acks, indent=1), encoding="utf-8")
     tmp.replace(out_dir / "acks.json")
     return True
@@ -884,7 +1003,7 @@ def save(report: dict, out_dir: Path = DIR) -> Path:
     data = json.dumps(report, indent=1, default=str)
     path = out_dir / f"{report['generatedAt'][:10]}.json"
     for p in (path, out_dir / "latest.json"):
-        tmp = p.with_suffix(".tmp")
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
         tmp.write_text(data, encoding="utf-8")
         tmp.replace(p)
     for old in sorted(out_dir.glob("20*.json"))[:-KEEP]:
