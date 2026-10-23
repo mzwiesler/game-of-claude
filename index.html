@@ -169,6 +169,19 @@ main.built .group { animation: none; } /* rise only on first load, not on every 
 .md h3 { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--yellow); margin: 12px 0 4px; }
 .md ol, .md ul { margin: 4px 0; padding-left: 20px; } .md li { margin: 3px 0; } .md p { margin: 6px 0; }
 .md .who { font: 11px var(--mono); color: var(--muted); margin-top: 10px; }
+/* Security: security.py report, findings grouped Leaks · Events · Posture, reviewed ones folded */
+.sdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: 0; }
+.sdot.red { background: var(--bad); box-shadow: 0 0 8px var(--bad); animation: blink 1s steps(2, start) infinite; }
+.sdot.yellow { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.sdot.green { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.sec-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sec-meta .md-bar { padding: 0; margin-left: auto; }
+.sgrp { padding: 10px 14px 4px; font: 700 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--yellow); border-bottom: 1px solid #ffffff08; }
+.frow .acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.frow .acts .rs { margin-top: 0; }
+.kind.back { color: var(--bad); font-weight: 700; }
+.passed { margin: 0; padding: 4px 14px 12px 34px; font: 11.5px var(--mono); color: var(--muted); }
+.passed li { margin: 3px 0; } .passed li::marker { content: "✓  "; color: var(--ok); }
 </style>
 </head>
 <body>
@@ -215,7 +228,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const MC = ['#ffd100', '#5ab0ff', '#c08bff', '#3ddcc8', '#ff8a5a', '#9a978e'];
 const modelColor = (() => { const m = {}; return n => m[n] ??= MC[Object.keys(m).length % MC.length]; })();
-let built = false, prevSig = {}, prevCards = {}, prevStatus = null, prevInsights = null;
+let built = false, prevSig = {}, prevCards = {}, prevStatus = null, prevInsights = null, prevSecurity = null;
 
 function fmt(n, dec = 1) {
   n = +n || 0;
@@ -302,6 +315,51 @@ function insightsCard(r, run) {
     + `<div>${rows}</div>${review}</div>`, 'wide');
 }
 
+// Security card: security.py report (local scan, no Claude). ✓ reviewed acknowledges a finding until it comes back.
+const SEC_GROUPS = [['leaks', 'Leaks · what reached Claude'], ['events', 'Events · what Claude did'], ['posture', 'Posture · how much could go wrong']];
+const secOpen = r => (r && r.findings || []).filter(x => !x.reviewed);
+function securityCard(r, run) {
+  if (SNAPSHOT) return ''; // never in an exported snapshot (server.py --export leaves the report out anyway)
+  const bar = `<div class="md-bar">${run && run.error ? `<span class="err">last scan failed: ${esc(run.error)}</span>` : run && run.running ? '<span>scanning the last 7 days…</span>' : ''}
+    <button type="button" class="btn sm" data-act="sec-refresh"${run && run.running ? ' disabled' : ''} title="Re-run the security scan now (local, a few seconds)">${run && run.running ? `Scanning… ${since(run.startedAt, 'idle')}` : '↻ Scan'}</button></div>`;
+  if (!r) return card('Security', 'no report yet', `<div class="ins-meta sec-meta"><span>No report yet. Run <code>python3 security.py</code>; `
+    + `the scheduled insights task runs it every morning.</span>${bar}</div>`, 'wide');
+  const code = t => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
+  const open = secOpen(r), look = open.filter(x => x.severity !== 'low'), done = r.findings.filter(x => x.reviewed);
+  const dot = open.some(x => x.severity === 'high') ? 'red' : look.length ? 'yellow' : 'green';
+  const refs = x => (x.sessions || []).map(s => `<button type="button" class="rs" data-act="copy-resume" data-cmd="${esc('claude --resume ' + s.id)}"
+      title="Copy the resume command (run it in ${esc(s.project)})${s.at ? '\n' + esc(s.at.replace('T', ' ').slice(0, 16)) : ''}">${esc(s.project)} ${esc(s.id.slice(0, 8))} ⧉</button>`).join('');
+  const row = x => `<div class="frow sev-${x.severity}" data-k="sec-${esc(x.fp)}">
+      <span class="sev">${x.severity}</span>
+      <div><div class="n">${esc(x.title)}${x.cameBack ? '<span class="kind back">came back</span>' : ''}</div><div class="h">${esc(x.evidence)}</div><div class="fx">→ ${code(x.fix)}</div>
+        <div class="acts">${refs(x)}<button type="button" class="btn sm" data-act="sec-ack" data-fp="${esc(x.fp)}"${x.reviewed ? ' data-undo="1" title="Show it as open again"' : ' title="I looked at this: fold it away until it happens again"'}>${x.reviewed ? '↺ reopen' : '✓ reviewed'}</button></div></div></div>`;
+  const groups = SEC_GROUPS.map(([g, label]) => {
+    const f = open.filter(x => x.group === g), main = f.filter(x => x.severity !== 'low'), low = f.filter(x => x.severity === 'low');
+    return f.length ? `<div class="sgrp">${label}</div>${main.map(row).join('')}`
+      + (low.length ? `<details class="more"><summary>${low.length} more (low)</summary>${low.map(row).join('')}</details>` : '') : '';
+  }).join('');
+  const st = r.stats;
+  return card('Security', `<span class="sdot ${dot}"></span>${look.length ? `${look.length} thing${look.length > 1 ? 's' : ''} to look at` : 'All clear'} · last ${r.days} days · ${since(r.generatedAt, 'ago')}`,
+    `<div class="ins-meta sec-meta"><span>scan <b>${esc(r.generatedAt.replace('T', ' ').slice(0, 16))}</b> · ${st.sessions} sessions · ${fmt(st.toolCalls)} tool calls · `
+    + `${st.unsandboxed} unsandboxed · ${st.mcpWrites} MCP writes · ${st.high} high · ${st.medium} medium · ${st.low} low</span>${bar}</div>`
+    + (groups || '<div class="empty">Nothing open. 🎉</div>')
+    + (done.length ? `<details class="more"><summary>${done.length} reviewed</summary>${done.map(row).join('')}</details>` : '')
+    + (r.passed.length ? `<details class="more"><summary>${r.passed.length} checks passed</summary><ul class="passed">${r.passed.map(p => `<li>${esc(p)}</li>`).join('')}</ul></details>` : ''),
+    'wide');
+}
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-act="sec-refresh"], [data-act="sec-ack"]');
+  if (!b || b.disabled) return;
+  const ack = b.dataset.act === 'sec-ack';
+  b.disabled = true;
+  try {
+    const r = await fetch(ack ? 'api/security/ack' : 'api/security/refresh', { method: 'POST', headers: { 'X-Game-Of-Claude': '1', 'Content-Type': 'application/json' },
+      body: ack ? JSON.stringify({ fp: b.dataset.fp, undo: !!b.dataset.undo }) : undefined });
+    if (r.status === 409) toast('A security scan is already running.', 4000);
+    else if (!r.ok) throw new Error(r.status);
+  } catch (err) { b.disabled = false; toast(`<b>${ack ? 'Saving the review' : 'Scan'} failed</b> (${esc(err.message)}). Is the server running?`, 6000); }
+});
+
 function card(title, count, body, cls = '') {
   return `<section class="group ${cls}" data-card="${title}"><h2>${title}<span class="c">${count}</span></h2>${body}</section>`;
 }
@@ -371,6 +429,15 @@ function render(d) {
     if (notifyOn && notifyPerm === 'granted') desktopNote('💡 Claude insights', `${n} findings for the last ${d.insights.days} days`, 'insights');
   }
   prevInsights = ins;
+  const sec = d.security && d.security.generatedAt;
+  if (built && sec && prevSecurity !== sec) { // a new security.py report with an open high finding
+    const hi = secOpen(d.security).filter(x => x.severity === 'high');
+    if (hi.length) {
+      toast(`<b>Security:</b> ${hi.length} high finding${hi.length > 1 ? 's' : ''} to look at: ${esc(hi[0].title)}`, 12000);
+      if (notifyOn && notifyPerm === 'granted') desktopNote('🛡 Claude security', `${hi.length} high: ${hi[0].title}`, 'security');
+    }
+  }
+  prevSecurity = sec;
 
   const cards = [
     card('Needs attention', `${need} waiting · ${att.length} open (last hour)`, att.length ? att.map(s => `
@@ -384,6 +451,7 @@ function render(d) {
         <div class="num opt">${since(s.end, 'idle')}<small>since last</small></div></div>`).join('')
       : '<div class="empty">No open sessions in the last hour.</div>', 'wide att' + (need ? ' hot' : '')),
     insightsCard(d.insights, d.insightsRun),
+    securityCard(d.security, d.securityRun),
     card('Activity', `last ${d.daily.length} days`, activityChart(d.daily), 'wide'),
     card('Token mix', fmt(k.totalTokens) + ' total',
       `<div class="split">${TK.map(([key, , c]) => `<i style="flex-grow:${(t[key] || 0) / tsum};background:${c}"></i>`).join('')}</div>
@@ -412,7 +480,7 @@ function render(d) {
         <div class="num opt">${s.prompts}<small>prompts</small></div>
         <div class="num opt">${s.tools}<small>tools</small></div>
         <div class="num">${fmt(s.outputTokens)}<small>${fmt(s.tokens)} total</small></div></div>`).join(''), 'wide'),
-  ];
+  ].filter(Boolean); // the Security card is left out of exported snapshots
 
   // Only swap the cards whose HTML changed: no flicker, scroll position and hover stay
   const main = $('main');
@@ -454,7 +522,7 @@ function stopFlash() { if (!flashTimer) return; clearInterval(flashTimer); flash
 window.addEventListener('focus', stopFlash);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && document.hasFocus()) stopFlash(); });
 
-document.addEventListener('click', async e => { // copy `claude --resume <id>` from a Needs attention row
+document.addEventListener('click', async e => { // copy `claude --resume <id>` from a Needs attention or Security row
   const b = e.target.closest('[data-act="copy-resume"]');
   if (!b) return;
   const cmd = b.dataset.cmd;
