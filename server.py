@@ -149,8 +149,24 @@ class Hub:
             return self.version, self.data
 
 
-def handler(hub: Hub, root: Path):
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def handler(hub: Hub, root: Path, hosts: set[str] = LOCAL_HOSTS):
     class H(BaseHTTPRequestHandler):
+        def _length(self) -> int | None:
+            try:
+                return int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return None
+
+        def _host_ok(self) -> bool:
+            """Host header names this server (localhost or the --host address): a DNS-rebinding page
+            on another name cannot read the snapshot, which carries the security report."""
+            h = (self.headers.get("Host") or "").strip().lower()
+            h = h[1:].split("]")[0] if h.startswith("[") else h.rsplit(":", 1)[0] if h.count(":") == 1 else h
+            return h in hosts
+
         def do_POST(self):
             # The custom header makes a cross-site request need a CORS preflight, which this server
             # never answers, so other web pages cannot start (paid) Claude runs or overwrite the
@@ -162,9 +178,9 @@ def handler(hub: Hub, root: Path):
                 started = hub.refresh_security(root)
                 return self._send(202 if started else 409, "application/json", json.dumps({"started": started}).encode())
             if self.path == "/api/security/ack":
-                n = int(self.headers.get("Content-Length") or 0)
+                n = self._length()
                 try:
-                    body = json.loads(self.rfile.read(n)) if 0 < n <= 4096 else None
+                    body = json.loads(self.rfile.read(n)) if n and 0 < n <= 4096 else None
                     fp, undo = body["fp"], bool(body.get("undo"))
                     assert isinstance(fp, str)
                 except (ValueError, TypeError, KeyError, AssertionError):
@@ -172,7 +188,9 @@ def handler(hub: Hub, root: Path):
                 ok = hub.ack_security(fp, undo)
                 return self._send(200 if ok else 404, "application/json", json.dumps({"ok": ok}).encode())
             if self.path == "/api/pokemon":
-                n = int(self.headers.get("Content-Length") or 0)
+                n = self._length()
+                if n is None:
+                    return self._send(400, "text/plain", b"bad content-length")
                 if not 0 < n <= pokesave.MAX_BYTES:
                     return self._send(413, "text/plain", b"too large")
                 try:
@@ -190,6 +208,8 @@ def handler(hub: Hub, root: Path):
             elif path in STATIC:
                 f, ctype = STATIC[path]
                 self._send(200, ctype, f.read_bytes())
+            elif path in ("/api/stats", "/api/events") and not self._host_ok():
+                self._send(403, "text/plain", b"forbidden host")
             elif path == "/api/stats":
                 self._send(200, "application/json", hub.data)
             elif path == "/api/events":
@@ -273,7 +293,7 @@ def main():
         return
 
     threading.Thread(target=hub.watch, args=(args.interval,), daemon=True).start()
-    srv = ThreadingHTTPServer((args.host, args.port), handler(hub, args.projects_dir))
+    srv = ThreadingHTTPServer((args.host, args.port), handler(hub, args.projects_dir, LOCAL_HOSTS | {args.host.lower()}))
     srv.daemon_threads = True  # open SSE streams must not block Ctrl+C
     url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '') else args.host}:{args.port}/"
     print(f"Game of Claude on {url}  (Ctrl+C to stop)", flush=True)

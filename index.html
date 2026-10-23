@@ -317,6 +317,7 @@ function insightsCard(r, run) {
 
 // Security card: security.py report (local scan, no Claude). ✓ reviewed acknowledges a finding until it comes back.
 const SEC_GROUPS = [['leaks', 'Leaks · what reached Claude'], ['events', 'Events · what Claude did'], ['posture', 'Posture · how much could go wrong']];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i; // only real session ids go into a resume command
 const secOpen = r => (r && r.findings || []).filter(x => !x.reviewed);
 function securityCard(r, run) {
   if (SNAPSHOT) return ''; // never in an exported snapshot (server.py --export leaves the report out anyway)
@@ -327,7 +328,7 @@ function securityCard(r, run) {
   const code = t => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
   const open = secOpen(r), look = open.filter(x => x.severity !== 'low'), done = r.findings.filter(x => x.reviewed);
   const dot = open.some(x => x.severity === 'high') ? 'red' : look.length ? 'yellow' : 'green';
-  const refs = x => (x.sessions || []).map(s => `<button type="button" class="rs" data-act="copy-resume" data-cmd="${esc('claude --resume ' + s.id)}"
+  const refs = x => (x.sessions || []).filter(s => UUID.test(s.id)).map(s => `<button type="button" class="rs" data-act="copy-resume" data-cmd="${esc('claude --resume ' + s.id)}"
       title="Copy the resume command (run it in ${esc(s.project)})${s.at ? '\n' + esc(s.at.replace('T', ' ').slice(0, 16)) : ''}">${esc(s.project)} ${esc(s.id.slice(0, 8))} ⧉</button>`).join('');
   const row = x => `<div class="frow sev-${x.severity}" data-k="sec-${esc(x.fp)}">
       <span class="sev">${x.severity}</span>
@@ -526,6 +527,7 @@ document.addEventListener('click', async e => { // copy `claude --resume <id>` f
   const b = e.target.closest('[data-act="copy-resume"]');
   if (!b) return;
   const cmd = b.dataset.cmd;
+  if (!/^claude --resume [0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(cmd)) return toast('That is not a session id.', 3000);
   try { await navigator.clipboard.writeText(cmd); }
   catch { // no async clipboard (insecure origin, e.g. an exported snapshot opened from disk)
     const ta = Object.assign(document.createElement('textarea'), { value: cmd });
