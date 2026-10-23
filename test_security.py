@@ -12,6 +12,24 @@ NOW = datetime.now().astimezone()
 # in a scan of the session that wrote it).
 GH_TOKEN = "ghp_" + "".join("aB3dE6gH9k"[i % 10] for i in range(36))
 ANT_KEY = "sk-ant-" + "api03-" + "Zq7Lm2Np" * 5
+
+
+def _iban(country, bban):
+    """A valid IBAN with computed check digits."""
+    n = int("".join(str(int(c, 36)) for c in bban + country + "00"))
+    return f"{country}{98 - n % 97:02d}{bban}"
+
+
+def _card(prefix):
+    """A Luhn-valid 16-digit card number."""
+    for last in "0123456789":
+        d = prefix + last
+        if sum(int(c) * (2 if i % 2 else 1) - (9 if int(c) * (2 if i % 2 else 1) > 9 else 0) for i, c in enumerate(reversed(d))) % 10 == 0:
+            return d
+
+
+IBAN = _iban("DE", "50070010" + "0987654321")
+CARD = _card("40001234" + "5678912")
 VIOLATION = "<sandbox_violations>\ndeny network-outbound evil.org:443 (not in this command's allowed_domains)\n</sandbox_violations>"
 
 
@@ -188,8 +206,8 @@ class SecurityTest(unittest.TestCase):
         self.assertEqual(sorted(k for k in f if k.startswith("cred:")), ["cred:/repo/.env.prod", "cred:~/.ssh/id_rsa", "cred:~/.zshrc.local"])
 
     def test_outside_files_and_pii(self):
-        iban = "DE89 3704 0044 0532 0130 00"  # the standard IBAN example: valid checksum
-        self.write("a", [prompt(0, f"pay to {iban}, card 4000 0012 3456 7899, not 4111 1111 1111 1111")]
+        card = " ".join(CARD[i:i + 4] for i in range(0, 16, 4))
+        self.write("a", [prompt(0, f"pay to {IBAN}, card {card}, not 4111 1111 1111 1111 or DE89370400440532013000")]
                    + [use(1, "r1", "Read", {"file_path": "/home/x/repos/other/a.py"}), result(2, "r1", "x"),
                       use(3, "r2", "Read", {"file_path": "/mnt/c/Users/me/Documents/hr.xlsx"}), result(4, "r2", "x"),
                       use(5, "r3", "Read", {"file_path": "/usr/lib/python3/os.py"}), result(6, "r3", "x"),

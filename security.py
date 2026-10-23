@@ -80,6 +80,7 @@ SECRET_RE = [(k, sev, re.compile(p)) for k, sev, p in SECRETS]
 PLACEHOLDER = re.compile(r"x{3,}|\*{3,}|<[^>]*>|\$\{|^\$|changeme|example|placeholder|dummy|redacted|your[_-]|fake|sample|\.\.\.|…", re.I)
 IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b")
 CARD = re.compile(r"(?<![\d.-])(?:4\d{3}|5[1-5]\d\d|2[2-7]\d\d|3[47]\d\d)(?:[ -]?\d{4}){2}[ -]?\d{3,4}(?![\d.-])")
+EXAMPLE_IBANS = {"DE89370400440532013000", "GB82WEST12345698765432", "GB29NWBK60161331926819"}  # the documentation examples
 TEST_CARDS = {"4111111111111111", "4242424242424242", "5555555555554444", "5105105105105100", "4012888888881881",
               "378282246310005", "371449635398431", "4000056655665556", "2223003122003222"}
 
@@ -229,7 +230,7 @@ def pii_in(text: str):
     """(kind, value) for IBANs (mod-97 checked) and card numbers (Luhn checked, test numbers skipped)."""
     if any(c.isdigit() for c in text):
         for m in IBAN.finditer(text):
-            if _iban_ok(m.group(0)):
+            if _iban_ok(m.group(0)) and m.group(0).replace(" ", "") not in EXAMPLE_IBANS:
                 yield "IBAN", m.group(0).replace(" ", "")
         for m in CARD.finditer(text):
             d = re.sub(r"\D", "", m.group(0))
